@@ -8,6 +8,7 @@ pub mod config;
 pub mod ep;
 pub mod error;
 pub mod hub;
+pub mod memory;
 pub mod model;
 pub mod pipeline;
 pub mod pool;

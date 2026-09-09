@@ -113,23 +113,29 @@ impl Registry {
 
 fn load_model(cfg: &ModelConfig, hf_cache: Option<&std::path::Path>, max_queue: usize) -> Result<Arc<LoadedModel>> {
 	cfg.validate()?;
-	tracing::info!(model = cfg.name.as_str(), kind = cfg.kind.as_str(), "loading model");
+	let t_start = std::time::Instant::now();
+	let rss_before = crate::memory::rss_mb().unwrap_or(0);
+	tracing::info!(model = cfg.name.as_str(), kind = cfg.kind.as_str(), replicas = cfg.replicas, "loading model");
 
 	let resolved = hub::resolve(cfg, hf_cache)?;
-	tracing::debug!(
+	let model_mb = crate::memory::model_size_mb(&resolved.model).unwrap_or(0);
+	tracing::info!(
 		model = cfg.name.as_str(),
 		source = %resolved.source,
 		model_file = %resolved.model.display(),
-		tokenizer = %resolved.tokenizer.display(),
-		"model files resolved"
+		model_mb,
+		elapsed_ms = t_start.elapsed().as_millis(),
+		"model files resolved (incl. download if not cached)"
 	);
 	let encoder = Encoder::new(&resolved.tokenizer, cfg.max_len)?;
 
 	let (eps, _) = resolve_eps(cfg);
+	let t_sessions = std::time::Instant::now();
 	let mut sessions = Vec::with_capacity(cfg.replicas);
 	for _ in 0..cfg.replicas {
 		sessions.push(new_session(&resolved.model, cfg)?);
 	}
+	let session_ms = t_sessions.elapsed().as_millis();
 	let first = sessions.first().expect("replicas >= 1, validated");
 	let input_names = first.inputs().iter().map(|i| i.name().to_string()).collect();
 	let output_names = first.outputs().iter().map(|o| o.name().to_string()).collect();
@@ -188,13 +194,20 @@ fn load_model(cfg: &ModelConfig, hf_cache: Option<&std::path::Path>, max_queue: 
 		}
 	};
 
+	let rss_after = crate::memory::rss_mb().unwrap_or(0);
+	let rss_used = rss_after.saturating_sub(rss_before);
 	tracing::info!(
 		model = cfg.name.as_str(),
 		kind = cfg.kind.as_str(),
 		source = %resolved.source,
+		model_mb,
 		replicas = sessions.len(),
-		eps = ?eps,
-		max_len = ?cfg.max_len,
+		eps = %eps.join(","),
+		max_len = %cfg.max_len.map(|v| v.to_string()).unwrap_or_else(|| "unset".into()),
+		session_build_ms = session_ms,
+		elapsed_ms = t_start.elapsed().as_millis(),
+		ram_used_mb = rss_used,
+		ram_total_mb = rss_after,
 		"model loaded"
 	);
 	Ok(Arc::new(LoadedModel {

@@ -1840,6 +1840,7 @@ name = "rsinfer-core"
 version = "0.1.0"
 dependencies = [
  "hf-hub",
+ "libc",
  "ndarray",
  "ort",
  "serde",

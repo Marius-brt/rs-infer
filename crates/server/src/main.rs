@@ -36,21 +36,27 @@ async fn main() -> anyhow::Result<()> {
 	let config = Arc::new(config);
 
 	tracing::info!(
-		"rsinfer v{} starting with {} model(s); EP features: coreml={} cuda={} tensorrt={} nvrtx={}",
+		"rsinfer v{} starting with {} model(s) on {} ({}); EP features: coreml={} cuda={} tensorrt={} nvrtx={}",
 		env!("CARGO_PKG_VERSION"),
 		config.models.len(),
+		std::env::consts::OS,
+		std::env::consts::ARCH,
 		cfg!(feature = "ep-coreml"),
 		cfg!(feature = "ep-cuda"),
 		cfg!(feature = "ep-tensorrt"),
 		cfg!(feature = "ep-nvrtx"),
 	);
+	if let Some(rss) = rsinfer_core::memory::rss_mb() {
+		tracing::info!(ram_mb = rss, "process memory at startup");
+	}
 	tracing::info!(bind = %config.server.bind, "resolving and loading configured models (first run downloads from the HF Hub)");
 	let started = std::time::Instant::now();
 	let registry = Arc::new(Registry::load(config.clone()).await?);
 	tracing::info!(
 		elapsed_ms = started.elapsed().as_millis(),
 		models = registry.infos().len(),
-		"all models loaded; server ready"
+		ram_total_mb = ram_mb(),
+		"all models loaded"
 	);
 
 	let state = AppState::new(registry, config.clone());
@@ -63,12 +69,22 @@ async fn main() -> anyhow::Result<()> {
 
 	let listener = TcpListener::bind(&config.server.bind).await.with_context(|| format!("cannot bind {}", config.server.bind))?;
 	let addr = listener.local_addr()?;
-	tracing::info!(%addr, "listening for requests");
+	tracing::info!(
+		%addr,
+		url = %format!("http://{addr}"),
+		total_startup_ms = started.elapsed().as_millis(),
+		ram_total_mb = ram_mb(),
+		"HTTP server ready; listening for requests"
+	);
 	axum::serve(listener, app)
 		.with_graceful_shutdown(shutdown_signal())
 		.await
 		.context("server error")?;
 	Ok(())
+}
+
+fn ram_mb() -> u64 {
+	rsinfer_core::memory::rss_mb().unwrap_or(0)
 }
 
 fn validate(config: &rsinfer_core::Config) -> anyhow::Result<()> {
@@ -88,6 +104,10 @@ fn validate(config: &rsinfer_core::Config) -> anyhow::Result<()> {
 fn init_tracing() {
 	use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 	let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,ort=warn,tokenizers=warn,reqwest=warn,hf_hub=warn"));
+	// Startup/lifecycle logs from our own crates are always visible, even if RUST_LOG is set stricter.
+	let filter = ["rsinfer", "rsinfer_server", "rsinfer_core"].into_iter().fold(filter, |f, t| {
+		f.add_directive(format!("{t}=info").parse().expect("static directive parses"))
+	});
 	tracing_subscriber::registry()
 		.with(filter)
 		.with(tracing_subscriber::fmt::layer().with_target(false))
