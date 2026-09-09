@@ -1,0 +1,150 @@
+---
+title: Configuration
+description: Every server, model, and CLI option in a reference table.
+---
+
+The server reads a YAML file (default `config.yaml`). A fully-commented example
+lives at `configs/config.example.yaml`.
+
+The file has two top-level sections: `server` (global options) and `models`
+(a list of model definitions).
+
+## CLI
+
+`ortinfer-server` takes a single flag:
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config <PATH>` | `-c` | `config.yaml` | Path to the YAML config file |
+
+```bash
+ortinfer-server --config configs/config.example.yaml
+```
+
+Verbosity is controlled by the `RUST_LOG` environment variable (see
+[Logging](#logging)).
+
+## Server options
+
+```yaml
+server:
+  bind: 0.0.0.0:8080
+  max_body_mb: 32
+  request_timeout_ms: 120000
+  max_queue: 256
+  queue_timeout_ms: 30000
+  # hf_cache_dir: .hf-cache
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `bind` | string | `0.0.0.0:8080` | `host:port` to bind the HTTP server to. |
+| `max_body_mb` | int | `32` | Hard cap on request body size (MiB). Larger requests are rejected with `413`. |
+| `request_timeout_ms` | int | `120000` | Overall per-request timeout (ms); exceeded → `408`. |
+| `max_queue` | int | `256` | Max HTTP connections waiting for a session slot *per model*; overflow → `429`. |
+| `queue_timeout_ms` | int | `30000` | How long a request waits for a session slot; slow queue → `503`. |
+| `hf_cache_dir` | path | *(unset)* | Directory used for Hugging Face downloads. Defaults to `HF_HOME` or `~/.cache/huggingface`. |
+
+## Model options
+
+Each entry in `models` selects a **kind** (pipeline) and a model source
+(`hf` repo id or a local `path`). Options common to all kinds:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | *(required)* | Unique model id; referenced by clients as `model` in requests. |
+| `kind` | string | *(required)* | Pipeline: `embedding`, `rerank`, `zeroshot`, `pii`. |
+| `hf` | string | *(required if no `path`)* | Hugging Face repo id, e.g. `Xenova/multilingual-e5-small`. Downloaded into the cache at startup. |
+| `path` | path | *(required if no `hf`)* | Local directory containing `model.onnx` + `tokenizer.json` (+ `config.json`). |
+| `revision` | string | `main` | HF repo branch/tag/commit. |
+| `subfolder` | string | *(unset)* | Subdirectory inside the repo/`path` to look for files, e.g. `onnx`. |
+| `file` | string | *(unset)* | Pin an exact graph filename (e.g. `onnx/model_quantized.onnx`); overrides the automatic `model.onnx` > `fp16` > `quantized` preference. |
+| `tokenizer_hf` | string | `hf` | Repo to take `tokenizer.json`/`config.json` from, for model-only ONNX exports. |
+| `max_len` | int | *(unset)* | Tokenizer truncation length. |
+| `replicas` | int | `2` | Number of concurrent ORT sessions (pool replicas) — a memory vs throughput dial. |
+| `intra_threads` | int | `0` | intra-op threads per session; `0` = ORT default. |
+| `eps` | list[string] | `[cpu]` | Execution provider priority list (see [Execution providers](#execution-providers)). |
+| `default` | bool | `false` | Make this model the default for its kind (requests without a `model` field use it). If unset, the single model of a kind is the default. |
+| `ort_log_level` | string | `warn` | ORT native log level: `verbose`, `info`, `warn`, `error`. `error` silences CoreML/TensorRT graph-partition chatter. |
+| `device_id` | int | `0` | GPU device index for CUDA/TensorRT/NVRTX. |
+
+### Kind-specific options
+
+**Embedding** (`kind: embedding`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `pooling` | string | `auto` | `auto` (from `1_Pooling/config.json`), `cls`, `mean`, `last`. |
+| `normalize` | bool | `true` | L2-normalize output vectors. |
+| `dimensions` | int | *(unset)* | Matryoshka truncation (request may override). |
+
+**Rerank** (`kind: rerank`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `scoring` | string | `auto` | `auto`, `sigmoid`, `softmax`, `yes_no` (all → relevance score in `(0,1)`), or `logit` (raw, unbounded scores). `yes_no` covers Qwen3-Reranker-style vocabulary scoring. |
+
+**Zero-shot / true-false** (`kind: zeroshot`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `hypothesis_template` | string | `The text is about {label}.` | Template used for zero-shot classification. |
+| `entailment_label` | string | `entailment` | Label treated as entailment. |
+| `contradiction_label` | string | `contradiction` | Label treated as contradiction. |
+
+**PII / NER** (`kind: pii`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `threshold` | float | `0.5` | Minimum token probability; below it the token is treated as outside any entity. |
+
+### Execution providers
+
+`eps` is a priority list. Entries not compiled into the binary, or absent from
+the linked ONNX Runtime build, are skipped with a warning; CPU is always the
+final fallback. `GET /v1/models` reports what each model actually uses.
+
+| Value | Requires cargo feature | Platform |
+|-------|------------------------|----------|
+| `cpu` | *(always)* | everywhere |
+| `coreml` | `ep-coreml` | macOS |
+| `cuda` | `ep-cuda` | Linux + CUDA/cuDNN |
+| `tensorrt` | `ep-cuda,ep-tensorrt` | Linux (datacenter GPUs) |
+| `nvrtx` | `ep-nvrtx,lax-ep-matching` | Linux (consumer GeForce/RTX, ORT 1.22+) |
+
+**CoreML caveat:** for small BERT-size encoders CoreML often ends up *slower*
+than CPU (ORT splits the graph into many CPU↔CoreML partitions). Default to
+`eps: [cpu]` for small encoders and benchmark per model.
+
+```yaml
+models:
+  - name: e5-small
+    kind: embedding
+    hf: Xenova/multilingual-e5-small
+    max_len: 512
+    replicas: 2
+    eps: [coreml, cpu]
+    pooling: mean
+    normalize: true
+```
+
+## Logging
+
+Logging uses [tracing](https://docs.rs/tracing) and is configured via the
+`RUST_LOG` environment variable:
+
+```bash
+RUST_LOG=info ./target/release/ortinfer-server --config config.yaml   # startup + request summaries
+RUST_LOG=debug ./target/release/ortinfer-server --config config.yaml  # + EP/session/file-resolution detail
+```
+
+| Level | What you see |
+|-------|--------------|
+| `error` | Errors only |
+| `warn` | Warnings + errors |
+| `info` (default) | Startup, model loading completion, HTTP request summaries (`method`, `route`, `status`, `duration_ms`) |
+| `debug` | Per-file hub resolution, session construction, EP probing |
+| `trace` | Everything, incl. tokenizers/ORT internals (noisy) |
+
+Per-crate overrides are supported, e.g.
+`RUST_LOG=info,hf_hub=debug` to watch downloads only.

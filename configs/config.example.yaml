@@ -1,0 +1,94 @@
+# ortinfer server configuration (YAML).
+# Run:  ortinfer-server --config configs/config.example.yaml
+
+server:
+  bind: 0.0.0.0:8080
+  max_body_mb: 32              # request body hard limit
+  request_timeout_ms: 120000   # per-request timeout
+  max_queue: 256               # waiters per model before 429
+  queue_timeout_ms: 30000      # how long a request waits for a session slot
+  # hf_cache_dir: .hf-cache    # else HF_HOME / ~/.cache/huggingface
+
+# --- Embeddings (OpenAI/vLLM-compatible /v1/embeddings, TEI-compatible /embed) ---
+# Any ONNX sentence-transformer export works (Xenova/*, onnx-community/*).
+# Pooling is auto-detected from 1_Pooling/config.json when present, else mean.
+models:
+  - name: e5-small
+    kind: embedding
+    hf: Xenova/multilingual-e5-small
+    # file: onnx/model_fp16.onnx   # pin an exact graph if a repo only ships
+    #                              # quantized/fp16 variants
+    max_len: 512
+    replicas: 2                    # concurrent sessions (memory vs throughput dial)
+    # tokenizer_hf: intfloat/multilingual-e5-small  # aux files from another repo
+    # path: models/e5              # instead of `hf`, a directory with
+    #                              # model.onnx + tokenizer.json (+ config.json)
+    # dimensions: 384              # Matryoshka truncation (request may override)
+    # normalize: true
+    # CoreML is often SLOWER than CPU for small transformer encoders: ORT splits
+    # the graph into many CPU<->CoreML partitions (measured ~3x slower than pure
+    # CPU for e5-small on Apple Silicon). Benchmark before enabling it; it can pay
+    # off for large models whose ops are fully CoreML-compatible.
+    eps: [cpu]                     # priority order; unavailable entries are skipped
+    # eps: [coreml, cpu]
+    # coreml_compute_units: cpu_and_gpu   # all | cpu_and_gpu | cpu_and_ne | cpu_only
+
+  # --- Rerankers (/v1/rerank, /rerank, /v1/score) ---
+  # scoring: auto | sigmoid | softmax | yes_no all return relevance_score in (0,1);
+  # "logit" is the only mode returning raw unbounded scores (opt-in).
+  - name: ms-marco
+    kind: rerank
+    hf: Xenova/ms-marco-MiniLM-L-6-v2
+    max_len: 512
+    replicas: 1
+    scoring: auto
+
+  # NOT YET RUNNABLE: onnx-community/Qwen3-Reranker-0.6B-ONNX ships a causal-LM
+  # graph (requires position_ids + past_key_values inputs, quantized files only).
+  # scoring: yes_no works for reranker exports that are plain input_ids/
+  # attention_mask classifiers emitting vocabulary logits.
+  # - name: qwen3-reranker
+  #   kind: rerank
+  #   hf: onnx-community/Qwen3-Reranker-0.6B-ONNX
+  #   file: onnx/model_quantized.onnx
+  #   scoring: yes_no
+
+  # --- PII / token classification (/pii/detect, /pii/redact) ---
+  # Any ONNX NER/PII token-classification model with id2label in config.json.
+  - name: ai4privacy
+    kind: pii
+    hf: onnx-community/distilbert_finetuned_ai4privacy_v2-ONNX
+    max_len: 256
+    threshold: 0.5
+    ort_log_level: error           # silences ORT graph-partition chatter; default warn
+
+  - name: eu-pii                   # 42 entity types, 26 EU languages
+    kind: pii
+    hf: onnx-community/eu-pii-safeguard-ONNX
+    max_len: 256
+
+  # LiquidAI/LFM2.5-Encoder-350M-PII-Detector (40 PII types, 16 langs):
+  # no ONNX is published; export once with
+  #   cd python && uv run export_lfm2_pii.py --out ../models/lfm-pii
+  # Note: spans of format-bound entities (IBAN, phone, dates) fragment without
+  # the model card's hybrid regex decode layer (port pending).
+  - name: lfm-pii
+    kind: pii
+    path: models/lfm-pii
+    max_len: 256
+    ort_log_level: error
+
+  # --- Classification (/classify/zero-shot, /classify/true-false) ---
+  # Encoder-only NLI models (DeBERTa/DistilBERT/RoBERTa-MNLI). seq2seq BART-MNLI
+  # is not supported by ort-rs sessions. DeBERTa-v3 NLI models follow the
+  # instruction-following NLI recipe much better than distilbert for true/false.
+  - name: mnli
+    kind: zeroshot
+    hf: onnx-community/DeBERTa-v3-base-mnli-ONNX   # model-only export...
+    # NOTE: the aux repo must contain tokenizer.json — microsoft/deberta-v3-base
+    # ships only spm.model (no tokenizer.json), so it won't work here.
+    tokenizer_hf: MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli  # ...tokenizer from this repo
+    # max_len matters: deberta-v3 exports are memory hungry at 512
+    max_len: 256
+    hypothesis_template: 'The text is about {label}.'
+    # entailment_label / contradiction_label default to "entailment"/"contradiction"

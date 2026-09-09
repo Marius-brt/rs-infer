@@ -1,0 +1,32 @@
+server:
+  bind: 127.0.0.1:8080
+
+models:
+  - name: minilm
+    kind: embedding
+    hf: Xenova/all-MiniLM-L6-v2
+    max_len: 256
+    replicas: 2
+    eps: [coreml, cpu]
+    pooling: mean
+    normalize: true
+
+  - name: ms-marco
+    kind: rerank
+    hf: Xenova/ms-marco-MiniLM-L-6-v2
+    max_len: 256
+    replicas: 1
+
+  - name: ai4privacy
+    kind: pii
+    hf: onnx-community/distilbert_finetuned_ai4privacy_v2-ONNX
+    max_len: 256
+    replicas: 1
+
+  - name: mnli
+    kind: zeroshot
+    hf: onnx-community/DeBERTa-v3-base-mnli-ONNX
+    tokenizer_hf: MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli
+    max_len: 256
+    ort_log_level: error
+    replicas: 1

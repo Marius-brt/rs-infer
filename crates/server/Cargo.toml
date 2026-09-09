@@ -1,0 +1,35 @@
+[package]
+name = "ortinfer-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTTP inference API (vLLM-compatible embeddings/rerank + PII + zero-shot classify)"
+
+[features]
+default = []
+ep-coreml = ["ortinfer-core/ep-coreml"]
+ep-cuda = ["ortinfer-core/ep-cuda"]
+ep-tensorrt = ["ortinfer-core/ep-tensorrt"]
+ep-nvrtx = ["ortinfer-core/ep-nvrtx"]
+lax-ep-matching = ["ortinfer-core/lax-ep-matching"]
+
+[dependencies]
+ortinfer-core = { workspace = true }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }
+tower = "0.5"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+base64 = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+prometheus-client = "0.23"
+anyhow = "1"
+serde_norway = { workspace = true }
+http-body-util = "0.1"
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }

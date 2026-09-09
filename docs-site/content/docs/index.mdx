@@ -1,0 +1,41 @@
+---
+title: Overview
+description: An ONNX Runtime inference server in Rust — embeddings, rerankers, PII, and zero-shot classification.
+---
+
+ort-infer is a Rust inference server built on
+[ONNX Runtime](https://onnxruntime.ai) (via the [ort](https://ort.pyke.io)
+crate). One binary serves embeddings, rerankers, PII detection, and zero-shot
+classification through a single HTTP API.
+
+Models are declared in a YAML config and fetched from the Hugging Face Hub at
+startup (or read from a local directory) — no manual model prep.
+
+<Cards>
+  <Card title="Quick start" href="/docs/usage">
+    Build, configure, and run the server — locally or with Docker.
+  </Card>
+  <Card title="API reference" href="/docs/api">
+    Every endpoint: request/response schemas, examples, and an interactive playground.
+  </Card>
+  <Card title="Configuration" href="/docs/configuration">
+    Tables of every server, model, and CLI option.
+  </Card>
+</Cards>
+
+## Platform support
+
+macOS and Linux. Execution providers are **compile-time** features because ONNX
+Runtime's prebuilt binaries do not combine every EP into one download:
+
+| Profile | `make` command | Notes |
+|---------|----------------|-------|
+| CPU (works everywhere) | `make cpu` | no extra features |
+| macOS + CoreML/ANE | `make mac-coreml` | |
+| Linux + CUDA | `make gpu-cuda` | needs CUDA ≥ 13.2 & cuDNN 9 on `PATH` |
+| Linux + TensorRT | `make gpu-trt` | datacenter GPUs |
+| Linux + TensorRT-RTX | `make gpu-rtx` | consumer GeForce/RTX |
+
+`eps: [...]` per model in the config is a priority list; entries not compiled in
+or unsupported by the linked build are skipped with a warning, and CPU is always
+the final fallback. `GET /v1/models` reports what each model actually uses.

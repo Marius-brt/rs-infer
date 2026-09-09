@@ -1,0 +1,952 @@
+openapi: 3.1.0
+info:
+  title: ort-infer HTTP API
+  version: 0.1.0
+  description: |
+    The [ort-infer](https://ort.pyke.io) server exposes four model families through one HTTP
+    API: **embeddings**, **rerankers**, **PII detection / redaction**, and **zero-shot
+    classification** (including a true/false entailment judgement). Model ids come from
+    the server's YAML config; when `model` is omitted the default model of the kind is
+    used.
+
+    All bodies are JSON unless otherwise noted. Requests are subject to the server's
+    `max_body_mb`, `request_timeout_ms`, and per-model queue limits — see the
+    [Configuration guide](/docs/configuration) for the returned HTTP status codes.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Embeddings
+    description: Sentence-transformer / BERT encoders producing dense vectors.
+  - name: Rerankers
+    description: Cross-encoders that score (query, document) pairs.
+  - name: PII
+    description: Token-classification models for PII / NER detection and redaction.
+  - name: Classification
+    description: Encoder-only NLI models for zero-shot and true/false classification.
+  - name: Operations
+    description: Health, model inventory, and Prometheus metrics.
+
+paths:
+  /v1/embeddings:
+    post:
+      tags: [Embeddings]
+      operationId: createEmbeddings
+      summary: /v1/embeddings
+      description: |
+        Create embeddings (OpenAI/vLLM compatible). Accepts either a string, an array of strings, an array of token ids, or an array
+        of token-id arrays. Returns one embedding per input in `data`, ordered by the
+        `index` field. `dimensions` performs Matryoshka truncation and re-normalizes.
+        `encoding_format: "base64"` returns each vector as a little-endian f32 blob.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbeddingsRequest'
+            examples:
+              single:
+                summary: Single text
+                value:
+                  model: e5-small
+                  input: 'hello world'
+              batch:
+                summary: Batch with Matryoshka truncation
+                value:
+                  model: e5-small
+                  input: ['hello world', 'the quick brown fox']
+                  dimensions: 256
+              tokens:
+                summary: Pre-tokenized input
+                value:
+                  model: e5-small
+                  input: [[101, 7592, 2088, 102]]
+      responses:
+        '200':
+          description: One embedding per input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ModelNotFound'
+        '408':
+          $ref: '#/components/responses/Timeout'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/QueueFull'
+        '503':
+          $ref: '#/components/responses/QueueTimeout'
+
+  /embed:
+    post:
+      tags: [Embeddings]
+      operationId: embedTei
+      summary: /embed
+      description: |
+        Create embeddings (TEI-compatible).
+        Text-Embeddings-Inference compatible shape: `{"inputs": ["..."]}` → `[[f32, ...]]`.
+        Uses the default embedding model (no `model` field). Always returns float arrays
+        (no `base64` mode).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [inputs]
+              properties:
+                inputs:
+                  type: array
+                  items: { type: string }
+                  description: Texts to embed.
+                  example: ['hello world', 'the quick brown fox']
+                normalize:
+                  type: boolean
+                  description: Currently accepted but not used (normalize is per-model config).
+                  deprecated: true
+      responses:
+        '200':
+          description: One vector per input, in order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: array
+                  items: { type: number, format: float }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/QueueFull'
+
+  /v1/rerank:
+    post:
+      tags: [Rerankers]
+      operationId: rerank
+      summary: /v1/rerank
+      description: |
+        Rerank documents against a query (vLLM/Jina/Cohere compatible).
+        Scores every `(query, document)` pair, sorts by descending `relevance_score`, and
+        truncates to `top_n`. Scoring modes are configured per model in the YAML — all
+        modes except `logit` return scores in `(0, 1)`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RerankRequest'
+            examples:
+              basic:
+                summary: Basic rerank with top_n
+                value:
+                  model: ms-marco
+                  query: 'capital of France'
+                  documents:
+                    - 'Paris is the capital of France.'
+                    - 'The sky is blue.'
+                  top_n: 1
+      responses:
+        '200':
+          description: Ranked documents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RerankResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ModelNotFound'
+        '429':
+          $ref: '#/components/responses/QueueFull'
+
+  /rerank:
+    post:
+      tags: [Rerankers]
+      operationId: rerankAlias
+      summary: /rerank
+      description: Identical to `POST /v1/rerank` (vLLM/Jina/Cohere compatible reranker).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RerankRequest'
+      responses:
+        '200':
+          description: Ranked documents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RerankResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /v1/score:
+    post:
+      tags: [Rerankers]
+      operationId: score
+      summary: /v1/score
+      description: |
+        Score the `text_1 × text_2` cross-product (vLLM /v1/score).
+        Every pair between `text_1` and `text_2` is scored with the reranker. The
+        response `data` array has `|text_1| × |text_2|` items in pair order.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScoreRequest'
+            examples:
+              basic:
+                summary: Two texts scored against three candidates
+                value:
+                  model: ms-marco
+                  text_1: ['capital of France', 'capital of Germany']
+                  text_2:
+                    - 'Paris is the capital of France.'
+                    - 'Berlin is the capital of Germany.'
+                    - 'The sky is blue.'
+      responses:
+        '200':
+          description: One score per pair.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoreResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /pii/detect:
+    post:
+      tags: [PII]
+      operationId: piiDetect
+      summary: /pii/detect
+      description: |
+        Detect PII entities.
+        Runs a token-classification model and returns entity spans with character
+        offsets relative to the input. Provide either `text` (single) or `texts`
+        (batch). `threshold` overrides the per-model default. `types` filters the
+        entity types returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PiiRequest'
+            examples:
+              single:
+                summary: Detect in one text
+                value:
+                  model: ai4privacy
+                  text: 'Email john@example.com — John Smith'
+              batch:
+                summary: Batch with a type filter
+                value:
+                  model: ai4privacy
+                  texts: ['Email john@example.com', 'Call me at +33612345678']
+                  types: ['EMAIL', 'PHONE']
+      responses:
+        '200':
+          description: Detected entities per input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PiiDetectResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ModelNotFound'
+
+  /v1/pii/detect:
+    post:
+      tags: [PII]
+      operationId: piiDetectV1
+      summary: /v1/pii/detect
+      description: Identical to `POST /pii/detect`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PiiRequest'
+      responses:
+        '200':
+          description: Detected entities per input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PiiDetectResponse'
+
+  /pii/redact:
+    post:
+      tags: [PII]
+      operationId: piiRedact
+      summary: /pii/redact
+      description: |
+        Detect and redact PII.
+        Runs detection then applies the `mode`:
+        - `mask` (default): replace each entity with `mask_char` (default `*`) repeated
+          to the entity length.
+        - `remove`: drop the entity text entirely.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PiiRedactRequest'
+            examples:
+              mask:
+                summary: Mask entities with *
+                value:
+                  model: ai4privacy
+                  text: 'Email john@example.com — John Smith'
+                  mode: mask
+                  mask_char: '*'
+              remove:
+                summary: Remove entities entirely
+                value:
+                  model: ai4privacy
+                  text: 'Email john@example.com — John Smith'
+                  mode: remove
+      responses:
+        '200':
+          description: Redacted text + the entities that were redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PiiRedactResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /v1/pii/redact:
+    post:
+      tags: [PII]
+      operationId: piiRedactV1
+      summary: /v1/pii/redact
+      description: Identical to `POST /pii/redact`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PiiRedactRequest'
+      responses:
+        '200':
+          description: Redacted text + entities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PiiRedactResponse'
+
+  /classify/zero-shot:
+    post:
+      tags: [Classification]
+      operationId: classifyZeroShot
+      summary: /classify/zero-shot
+      description: |
+        Zero-shot classification (encoder-only NLI).
+        Runs the NLI model against the hypothesis template for each candidate label and
+        returns softmax scores. A single input returns a single object; a list returns
+        an object with `results` per input.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClassifyRequest'
+            examples:
+              basic:
+                summary: Choose one label
+                value:
+                  model: mnli
+                  input: 'The player scored a hat-trick'
+                  candidate_labels: ['sports', 'politics', 'cooking']
+      responses:
+        '200':
+          description: Label + score per input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClassifyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ModelNotFound'
+
+  /v1/classify/zero-shot:
+    post:
+      tags: [Classification]
+      operationId: classifyZeroShotV1
+      summary: /v1/classify/zero-shot
+      description: Identical to `POST /classify/zero-shot`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClassifyRequest'
+      responses:
+        '200':
+          description: Label + score per input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClassifyResponse'
+
+  /classify/true-false:
+    post:
+      tags: [Classification]
+      operationId: classifyTrueFalse
+      summary: /classify/true-false
+      description: |
+        True/false judgement (NLI entailment of an assertion).
+        Either pass a `question` (auto-reworded into an assertion) or give the
+        `assertion` directly. Returns the probability that each `input` entails the
+        assertion, plus a boolean `is_true` at the given `threshold` (default 0.5).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrueFalseRequest'
+            examples:
+              question:
+                summary: Ask a question
+                value:
+                  model: mnli
+                  input: 'Hey, lunch tomorrow? :)'
+                  question: 'Is this email important?'
+              assertion:
+                summary: Provide the assertion directly
+                value:
+                  model: mnli
+                  input: 'Order #98 shipped'
+                  assertion: 'The order has been delivered.'
+      responses:
+        '200':
+          description: True/false result per input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrueFalseResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ModelNotFound'
+
+  /v1/classify/true-false:
+    post:
+      tags: [Classification]
+      operationId: classifyTrueFalseV1
+      summary: /v1/classify/true-false
+      description: Identical to `POST /classify/true-false`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrueFalseRequest'
+      responses:
+        '200':
+          description: True/false result per input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrueFalseResponse'
+
+  /health:
+    get:
+      tags: [Operations]
+      operationId: health
+      summary: /health
+      responses:
+        '200':
+          description: Server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+    post:
+      tags: [Operations]
+      operationId: healthPost
+      summary: /health
+      description: Some health-check tools only send POSTs; the response is identical.
+      responses:
+        '200':
+          description: Server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /v1/models:
+    get:
+      tags: [Operations]
+      operationId: listModels
+      summary: /v1/models
+      description: |
+        List loaded models.
+        Returns one `ModelCard` per loaded model with the actual execution providers
+        used, replicas, max_len, and whether it is the default for its kind.
+      responses:
+        '200':
+          description: Model inventory.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object:
+                    type: string
+                    example: list
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelCard'
+
+  /metrics:
+    get:
+      tags: [Operations]
+      operationId: metrics
+      summary: /metrics
+      description: |
+        Prometheus metrics.
+        Text exposition format. Exports `ortinfer_http_requests_total` (by route +
+        status) and `ortinfer_http_request_duration_seconds` (histogram, by route).
+      responses:
+        '200':
+          description: Prometheus text format.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP ortinfer_http_requests_total Total HTTP requests
+                  # TYPE ortinfer_http_requests_total counter
+                  ortinfer_http_requests_total{route="/v1/embeddings",status="200"} 42
+
+components:
+  schemas:
+    EmbeddingsRequest:
+      type: object
+      required: [input]
+      properties:
+        model:
+          type: [string, 'null']
+          description: Configured model id; default model of kind `embedding` when omitted.
+        input:
+          description: Text, list of texts, list of token ids, or list of token-id lists.
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+            - { type: array, items: { type: integer, format: uint32 } }
+            - { type: array, items: { type: array, items: { type: integer, format: uint32 } } }
+        dimensions:
+          type: [integer, 'null']
+          description: Matryoshka truncation (request may override the model's config).
+        encoding_format:
+          type: [string, 'null']
+          enum: [float, base64, 'null']
+          description: '"base64" returns each vector as little-endian f32 bytes.'
+        user:
+          type: [string, 'null']
+          description: Accepted for OpenAI compatibility; unused.
+      additionalProperties: false
+
+    EmbeddingsResponse:
+      type: object
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbeddingItem'
+        model:
+          type: string
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    EmbeddingItem:
+      type: object
+      properties:
+        object:
+          type: string
+          const: embedding
+        index:
+          type: integer
+          description: Input index (order matches the request).
+        embedding:
+          description: Array of floats, or a base64 string when `encoding_format=base64`.
+          oneOf:
+            - type: array
+              items: { type: number, format: float }
+            - type: string
+
+    Usage:
+      type: object
+      description: Token usage — only prompt tokens are counted (no generation).
+      properties:
+        prompt_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+
+    RerankRequest:
+      type: object
+      required: [query, documents]
+      properties:
+        model:
+          type: [string, 'null']
+        query: { type: string }
+        documents:
+          type: array
+          items: { type: string }
+        top_n:
+          type: [integer, 'null']
+          description: Return the top N after sorting by score.
+        return_documents:
+          type: [boolean, 'null']
+          default: true
+          description: Include the document text in each result.
+        max_chunks_per_doc:
+          type: [integer, 'null']
+          description: Accepted for Cohere compatibility; currently unused.
+      additionalProperties: false
+
+    RerankResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: UUIDv4 for this response.
+        model:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RerankResult'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    RerankResult:
+      type: object
+      properties:
+        index:
+          type: integer
+          description: Position in the request's `documents` array.
+        document:
+          type: [object, 'null']
+          properties:
+            text: { type: string }
+        relevance_score:
+          type: number
+          format: double
+          description: In `(0, 1)` for `auto` / `sigmoid` / `softmax` / `yes_no` scoring; unbounded for `logit`.
+
+    ScoreRequest:
+      type: object
+      required: [text_1, text_2]
+      properties:
+        model: { type: [string, 'null'] }
+        text_1:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+        text_2:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+      additionalProperties: false
+
+    ScoreResponse:
+      type: object
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              object: { type: string, const: score }
+              index: { type: integer }
+              text_1: { type: string }
+              text_2: { type: string }
+              score: { type: number, format: double }
+        model: { type: string }
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    PiiRequest:
+      type: object
+      properties:
+        model: { type: [string, 'null'] }
+        text:
+          type: [string, 'null']
+          description: Single input text.
+        texts:
+          type: [array, 'null']
+          items: { type: string }
+          description: Batch input (either `text` or `texts` must be set).
+        threshold:
+          type: [number, 'null']
+          description: Per-request override of the model's token-probability threshold.
+        types:
+          type: [array, 'null']
+          items: { type: string }
+          description: Keep only these entity types (e.g. ["EMAIL", "PHONE"]).
+      additionalProperties: false
+
+    PiiRedactRequest:
+      allOf:
+        - $ref: '#/components/schemas/PiiRequest'
+        - type: object
+          properties:
+            mode:
+              type: [string, 'null']
+              enum: [mask, remove, 'null']
+              default: mask
+            mask_char:
+              type: [string, 'null']
+              default: '*'
+              description: Used with mode="mask" (repeated to entity length).
+
+    PiiDetectResponse:
+      type: object
+      properties:
+        object: { type: string, const: pii.detect }
+        model: { type: string }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: [string, 'null']
+                description: Original input, echoed when present.
+              entities:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PiiEntity'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    PiiRedactResponse:
+      type: object
+      properties:
+        object: { type: string, const: pii.redact }
+        model: { type: string }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              text: { type: string }
+              entities:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PiiEntity'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    PiiEntity:
+      type: object
+      properties:
+        entity_type: { type: string, example: EMAIL }
+        text: { type: string, example: 'john@example.com' }
+        score: { type: number, format: double }
+        start:
+          type: integer
+          description: Character offset (inclusive) in the original input.
+        end:
+          type: integer
+          description: Character offset (exclusive) in the original input.
+
+    ClassifyRequest:
+      type: object
+      required: [input, candidate_labels]
+      properties:
+        model: { type: [string, 'null'] }
+        input:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+        candidate_labels:
+          type: array
+          items: { type: string }
+        multi_label:
+          type: [boolean, 'null']
+          default: false
+          description: When true, each label is scored independently (no softmax across labels).
+        hypothesis_template:
+          type: [string, 'null']
+          description: Accepted but not currently honoured — set per-model in YAML.
+          deprecated: true
+      additionalProperties: false
+
+    ClassifyResponse:
+      oneOf:
+        - title: Single input
+          type: object
+          properties:
+            object: { type: string, const: classification }
+            model: { type: string }
+            labels: { type: array, items: { type: string } }
+            scores: { type: array, items: { type: number, format: double } }
+            usage: { $ref: '#/components/schemas/Usage' }
+        - title: Multiple inputs
+          type: object
+          properties:
+            object: { type: string, const: classification.list }
+            model: { type: string }
+            results:
+              type: array
+              items:
+                type: object
+                properties:
+                  labels: { type: array, items: { type: string } }
+                  scores: { type: array, items: { type: number, format: double } }
+            usage: { $ref: '#/components/schemas/Usage' }
+
+    TrueFalseRequest:
+      type: object
+      required: [input]
+      properties:
+        model: { type: [string, 'null'] }
+        input:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+        question:
+          type: [string, 'null']
+          description: Auto-reworded into an assertion. Provide either `question` or `assertion`.
+        assertion:
+          type: [string, 'null']
+          description: Explicit affirmative hypothesis; takes precedence over `question`.
+        threshold:
+          type: [number, 'null']
+          default: 0.5
+          minimum: 0
+          maximum: 1
+          description: "is_true is true when true_probability >= threshold."
+      additionalProperties: false
+
+    TrueFalseResponse:
+      oneOf:
+        - title: Single input
+          type: object
+          properties:
+            object: { type: string, const: classification.true_false }
+            model: { type: string }
+            label: { type: string, enum: [true, false] }
+            is_true: { type: boolean }
+            true_probability:
+              type: number
+              format: double
+              description: P(input entails the assertion).
+            assertion: { type: string }
+            usage: { $ref: '#/components/schemas/Usage' }
+        - title: Multiple inputs
+          type: object
+          properties:
+            object: { type: string, const: classification.true_false.list }
+            model: { type: string }
+            results:
+              type: array
+              items:
+                type: object
+                properties:
+                  label: { type: string, enum: [true, false] }
+                  is_true: { type: boolean }
+                  true_probability: { type: number, format: double }
+                  assertion: { type: string }
+            usage: { $ref: '#/components/schemas/Usage' }
+
+    ModelCard:
+      type: object
+      properties:
+        id: { type: string }
+        object: { type: string, const: model }
+        kind:
+          type: string
+          enum: [embedding, rerank, zeroshot, pii]
+        source:
+          type: string
+          description: '"hf:<repo>@<revision>[+aux:<repo>]" or "path:<dir>".'
+        execution_providers:
+          type: array
+          items: { type: string }
+        replicas: { type: integer }
+        max_len: { type: [integer, 'null'] }
+        default: { type: boolean }
+
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message: { type: string }
+            type:
+              type: string
+              description: Machine-readable error kind (e.g. "bad_request", "model_not_found").
+            code:
+              type: integer
+              description: HTTP status code.
+
+  responses:
+    BadRequest:
+      description: Invalid request body / parameters.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+    ModelNotFound:
+      description: The requested `model` is not loaded or has the wrong `kind`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+    TooLarge:
+      description: Request body exceeds `server.max_body_mb`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+    Timeout:
+      description: Request exceeded `server.request_timeout_ms`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+    QueueFull:
+      description: Too many waiters for this model (`server.max_queue` reached).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+    QueueTimeout:
+      description: Timed out waiting for a session slot (`server.queue_timeout_ms`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'

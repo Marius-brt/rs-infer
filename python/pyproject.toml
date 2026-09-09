@@ -1,0 +1,21 @@
+[project]
+name = "ortinfer-utils"
+version = "0.1.0"
+description = "Model export (HF -> ONNX) and HTTP benchmarking utilities for ortinfer"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.45",
+    "optimum[onnxruntime]>=1.23",
+    "onnx>=1.16",
+    "accelerate>=0.34",
+    "onnxscript>=0.3",
+    "huggingface-hub>=0.30",
+    "httpx>=0.27",
+    "numpy>=1.26",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+convert-to-onnx = "convert_to_onnx:main"
+ortinfer-bench = "benchmark:main"

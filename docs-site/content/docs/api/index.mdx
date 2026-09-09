@@ -1,0 +1,53 @@
+---
+title: Usage
+description: Interactive reference for every HTTP endpoint, generated from the server's OpenAPI 3.1 schema.
+---
+
+These pages are generated from `docs-site/openapi.yaml` in the repository with
+[Fumadocs OpenAPI](https://www.fumadocs.dev/docs/integrations/openapi).
+Each operation page includes the request/response JSON Schema, sample payloads,
+and an interactive playground that hits the configured server URL
+(default: `http://localhost:8080`).
+
+## Endpoint families
+
+<Cards>
+  <Card title="Embeddings" href="/docs/api/embeddings/createEmbeddings">
+    `POST /v1/embeddings` (OpenAI/vLLM shape) and `POST /embed` (TEI shape).
+  </Card>
+  <Card title="Rerankers" href="/docs/api/rerankers/rerank">
+    `POST /v1/rerank`, `POST /rerank`, `POST /v1/score`.
+  </Card>
+  <Card title="PII" href="/docs/api/pii/piiDetect">
+    `POST /pii/detect` and `POST /pii/redact` (with `/v1/*` aliases).
+  </Card>
+  <Card title="Classification" href="/docs/api/classification/classifyZeroShot">
+    `POST /classify/zero-shot` and `POST /classify/true-false`.
+  </Card>
+  <Card title="Operations" href="/docs/api/operations/listModels">
+    `GET /health`, `GET /v1/models`, `GET /metrics`.
+  </Card>
+</Cards>
+
+## Error format
+
+Errors return a JSON body shaped like:
+
+```json
+{
+  "error": {
+    "message": "model not found: my-model",
+    "type": "model_not_found",
+    "code": 404
+  }
+}
+```
+
+| Status | When |
+|--------|------|
+| `400` | Invalid body / parameters (`input` empty, wrong `kind` for endpoint, …). |
+| `404` | Requested `model` not loaded, or a different `kind` than the endpoint. |
+| `408` | `server.request_timeout_ms` exceeded. |
+| `413` | Body larger than `server.max_body_mb`. |
+| `429` | Too many waiters for the model (`server.max_queue` reached). |
+| `503` | Waited longer than `server.queue_timeout_ms` for a session slot. |

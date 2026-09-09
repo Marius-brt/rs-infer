@@ -1,0 +1,105 @@
+mod classify;
+mod embeddings;
+mod pii;
+mod rerank;
+
+use std::time::Instant;
+
+use axum::{
+	body::Body,
+	extract::{MatchedPath, Request, State},
+	middleware::{self, Next},
+	response::{IntoResponse, Response},
+	routing::{get, post},
+	Json, Router,
+};
+
+use crate::state::AppState;
+
+pub fn router(state: AppState) -> Router {
+	Router::new()
+		.route("/health", get(health).post(health))
+		.route("/v1/models", get(list_models))
+		.route("/v1/embeddings", post(embeddings::embeddings))
+		.route("/embed", post(embeddings::embed_tei))
+		.route("/v1/rerank", post(rerank::rerank_h))
+		.route("/rerank", post(rerank::rerank_h))
+		.route("/v1/score", post(rerank::score_h))
+		.route("/classify/zero-shot", post(classify::classify_h))
+		.route("/v1/classify/zero-shot", post(classify::classify_h))
+		.route("/classify/true-false", post(classify::true_false_h))
+		.route("/v1/classify/true-false", post(classify::true_false_h))
+		.route("/pii/detect", post(pii::pii_detect_h))
+		.route("/v1/pii/detect", post(pii::pii_detect_h))
+		.route("/pii/redact", post(pii::pii_redact_h))
+		.route("/v1/pii/redact", post(pii::pii_redact_h))
+		.route("/metrics", get(metrics_h))
+		.layer(middleware::from_fn_with_state(state.clone(), track))
+		.with_state(state)
+}
+
+/// Shared usage object: our pipelines only consume prompt tokens.
+pub(crate) fn usage(tokens: usize) -> crate::dto::Usage {
+	crate::dto::Usage { prompt_tokens: tokens, total_tokens: tokens }
+}
+
+async fn track(State(state): State<AppState>, req: Request<Body>, next: Next) -> Response {
+	let start = Instant::now();
+	let method = req.method().clone();
+	let route = req
+		.extensions()
+		.get::<MatchedPath>()
+		.map(|p| p.as_str().to_string())
+		.unwrap_or_else(|| req.uri().path().to_string());
+	let res = next.run(req).await;
+	let status = res.status().as_u16();
+	let elapsed = start.elapsed();
+	state.metrics.observe(&route, status, elapsed);
+	tracing::info!(
+		method = %method,
+		route = %route,
+		status,
+		duration_ms = elapsed.as_millis(),
+		"http request"
+	);
+	res
+}
+
+async fn health() -> impl IntoResponse {
+	Json(serde_json::json!({ "status": "ok" }))
+}
+
+#[derive(serde::Serialize)]
+struct ModelCard {
+	id: String,
+	object: &'static str,
+	kind: &'static str,
+	source: String,
+	execution_providers: Vec<String>,
+	replicas: usize,
+	max_len: Option<usize>,
+	default: bool,
+}
+
+async fn list_models(State(state): State<AppState>) -> Json<serde_json::Value> {
+	let data: Vec<ModelCard> = state
+		.registry
+		.infos()
+		.into_iter()
+		.map(|i| ModelCard {
+			id: i.name,
+			object: "model",
+			kind: i.kind,
+			source: i.source,
+			execution_providers: i.execution_providers,
+			replicas: i.replicas,
+			max_len: i.max_len,
+			default: i.default,
+		})
+		.collect();
+	Json(serde_json::json!({ "object": "list", "data": data }))
+}
+
+async fn metrics_h(State(state): State<AppState>) -> impl IntoResponse {
+	([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], state.metrics.encode())
+}
