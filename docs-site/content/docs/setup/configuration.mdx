@@ -11,14 +11,14 @@ The file has two top-level sections: `server` (global options) and `models`
 
 ## CLI
 
-`ortinfer-server` takes a single flag:
+`rsinfer-server` takes a single flag:
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--config <PATH>` | `-c` | `config.yaml` | Path to the YAML config file |
 
 ```bash
-ortinfer-server --config configs/config.example.yaml
+rsinfer-server --config configs/config.example.yaml
 ```
 
 Verbosity is controlled by the `RUST_LOG` environment variable (see
@@ -134,8 +134,8 @@ Logging uses [tracing](https://docs.rs/tracing) and is configured via the
 `RUST_LOG` environment variable:
 
 ```bash
-RUST_LOG=info ./target/release/ortinfer-server --config config.yaml   # startup + request summaries
-RUST_LOG=debug ./target/release/ortinfer-server --config config.yaml  # + EP/session/file-resolution detail
+RUST_LOG=info ./target/release/rsinfer-server --config config.yaml   # startup + request summaries
+RUST_LOG=debug ./target/release/rsinfer-server --config config.yaml  # + EP/session/file-resolution detail
 ```
 
 | Level | What you see |

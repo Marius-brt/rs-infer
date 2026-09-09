@@ -233,8 +233,8 @@ pub struct EntityOut {
 	pub end: usize,
 }
 
-impl From<ortinfer_core::pipeline::pii::Entity> for EntityOut {
-	fn from(e: ortinfer_core::pipeline::pii::Entity) -> Self {
+impl From<rsinfer_core::pipeline::pii::Entity> for EntityOut {
+	fn from(e: rsinfer_core::pipeline::pii::Entity) -> Self {
 		Self {
 			entity_type: e.entity_type,
 			text: e.text,

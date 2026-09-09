@@ -12,7 +12,7 @@ exporter (symbolic shapes are required: the short-conv forward contains a
 shape-dependent truncation branch that must resolve symbolically for dynamic
 sequence lengths).
 
-The output directory is immediately usable as an ortinfer `path:` model with
+The output directory is immediately usable as an rsinfer `path:` model with
 `kind: pii` (model.onnx + config.json + tokenizer.json, id2label BIOES).
 
 Example:
@@ -34,7 +34,7 @@ AUX_NOTE = "outputs [batch, seq, num_labels] float32 logits"
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--repo", default="LiquidAI/LFM2.5-Encoder-350M-PII-Detector")
-    p.add_argument("--out", required=True, help="output directory for the ortinfer `path:` model")
+    p.add_argument("--out", required=True, help="output directory for the rsinfer `path:` model")
     p.add_argument("--opset", type=int, default=17)
     p.add_argument("--seq", type=int, default=64, help="example sequence length for tracing")
     p.add_argument("--no-verify", dest="verify", action="store_false", help="skip the ORT-vs-torch consistency check")
@@ -122,7 +122,7 @@ def export(args: argparse.Namespace) -> Path:
     if not target.exists():
         raise SystemExit("export produced no model.onnx (check the error above)")
 
-    # Auxiliary files ortinfer needs locally: tokenizer + config (id2label).
+    # Auxiliary files rsinfer needs locally: tokenizer + config (id2label).
     from huggingface_hub import snapshot_download
 
     patterns = ["tokenizer.json", "config.json", "tokenizer_config.json", "special_tokens_map.json", "added_tokens.json"]

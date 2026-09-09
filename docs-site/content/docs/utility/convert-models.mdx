@@ -1,0 +1,93 @@
+---
+title: Converting models to ONNX
+description: Export Hugging Face checkpoints to the on-disk layout the server expects, with optional INT8/FP16.
+---
+
+Most models do **not** need conversion — declare an `hf` repo id in
+`config.yaml` and the server fetches ONNX (or exports from PyTorch via the Hub
+cache) at startup.
+Convert manually when you want an **air-gapped deploy**, a specific **opset**, or
+a **quantized** model that the server can only get from a local `path`.
+
+Everything lives in [`python/`](https://github.com/marius-brt/rs-infer/tree/main/python),
+managed with [uv](https://docs.astral.sh/uv/):
+
+```bash
+cd python
+uv sync        # installs torch, transformers, optimum[onnxruntime], ...
+```
+
+## `convert_to_onnx.py`
+
+Exports any supported HF checkpoint to the layout the server reads:
+
+```text
+models/minilm-l3/
+├── model.onnx        # (+ model.onnx_data if external data is used)
+├── tokenizer.json
+└── config.json
+```
+
+…with dynamic batch/sequence axes and automatic external-data handling.
+
+```bash
+# embeddings model
+uv run convert_to_onnx.py --repo sentence-transformers/paraphrase-MiniLM-L3-v2 \
+  --task feature-extraction --out ../models/minilm-l3
+
+# reranker, quantized to INT8
+uv run convert_to_onnx.py --repo cross-encoder/ms-marco-MiniLM-L-6-v2 \
+  --kind rerank --out ../models/ms-marco --int8
+```
+
+You can pass either `--task` (the raw
+[optimum task](https://huggingface.co/docs/optimum/exporters/task_manager)) or
+`--kind` (the server model kind), which maps automatically:
+
+| `--kind`       | optimum task            |
+| -------------- | ----------------------- |
+| `embedding`    | `feature-extraction`    |
+| `rerank`       | `text-classification`   |
+| `zeroshot`     | `text-classification`   |
+| `pii`          | `token-classification`  |
+
+### Options
+
+| Flag          | Default | Notes                                                        |
+| ------------- | ------- | ------------------------------------------------------------ |
+| `--repo`      | —       | Hugging Face model id (required)                             |
+| `--task`      | —       | optimum task name                                            |
+| `--kind`      | —       | server kind; alternative to `--task`                         |
+| `--out`       | —       | output directory (required) — usable directly as `path`      |
+| `--opset`     | `17`    | ONNX opset version                                           |
+| `--fp16`      | off     | half-precision export (CUDA host only)                       |
+| `--int8`      | off     | post-export dynamic INT8 quantization (CPU-optimized)        |
+| `--overwrite` | off     | remove the output dir first                                  |
+| `--subfolder` | `""`    | HF repo subfolder, e.g. for models stored in monorepos       |
+
+After a successful export the script prints a ready-to-paste snippet for
+`config.yaml`:
+
+```yaml
+models:
+  - name: ms-marco
+    kind: rerank
+    path: /Users/you/rs-infer/models/ms-marco
+```
+
+Set `path` (instead of `hf`) on a model entry and the server loads from disk
+with no Hub access — see [Configuration](/docs/setup/configuration).
+
+## `export_lfm2_pii.py`
+
+LFM2 PII detectors need a bespoke exporter: the repos are `trust_remote_code`
+and the remote code patches the LFM2 backbone to be **bidirectional** (symmetric
+gated short conv + non-causal attention), so a vanilla `optimum` export would
+silently produce a causal, wrongly-weighted graph. This script loads the remote
+class itself and traces it with torch's dynamo exporter, emitting the same
+directory layout (`kind: pii`).
+
+```bash
+uv run export_lfm2_pii.py --repo LiquidAI/LFM2.5-Encoder-350M-PII-Detector \
+  --out ../models/lfm-pii --verify
+```

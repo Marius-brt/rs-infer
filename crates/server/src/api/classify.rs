@@ -1,5 +1,5 @@
 use axum::{extract::State, Json};
-use ortinfer_core::{
+use rsinfer_core::{
 	Kind,
 	pipeline::zeroshot,
 };
@@ -15,7 +15,7 @@ use crate::{
 pub async fn classify_h(State(state): State<AppState>, Json(req): Json<ClassifyRequest>) -> Result<Json<ClassifyResponseBody>, ApiError> {
 	let model = state.registry.resolve(req.model.as_deref(), Kind::Zeroshot)?;
 	if req.candidate_labels.is_empty() {
-		return Err(ApiError(ortinfer_core::Error::BadRequest("`candidate_labels` is empty".into())));
+		return Err(ApiError(rsinfer_core::Error::BadRequest("`candidate_labels` is empty".into())));
 	}
 	let single = matches!(req.input, crate::dto::TextList::One(_));
 	let texts = req.input.into_vec();
@@ -40,10 +40,10 @@ pub async fn true_false_h(State(state): State<AppState>, Json(req): Json<TrueFal
 	let model = state.registry.resolve(req.model.as_deref(), Kind::Zeroshot)?;
 	let inputs = req.input.into_vec();
 	if inputs.is_empty() {
-		return Err(ApiError(ortinfer_core::Error::BadRequest("`input` is empty".into())));
+		return Err(ApiError(rsinfer_core::Error::BadRequest("`input` is empty".into())));
 	}
 	if req.question.as_deref().map(str::trim) == Some("") || (req.question.is_none() && req.assertion.is_none()) {
-		return Err(ApiError(ortinfer_core::Error::BadRequest("provide `question` or `assertion`".into())));
+		return Err(ApiError(rsinfer_core::Error::BadRequest("provide `question` or `assertion`".into())));
 	}
 	let threshold = req.threshold.unwrap_or(0.5).clamp(0.0, 1.0);
 	let out = zeroshot::classify_true_false(&model, inputs, req.question, req.assertion, state.queue_wait).await?;

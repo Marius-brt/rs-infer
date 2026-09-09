@@ -1,4 +1,4 @@
-# ortinfer python utilities
+# rsinfer python utilities
 
 Managed with [uv](https://docs.astral.sh/uv/).
 
@@ -8,7 +8,7 @@ uv sync                      # install pinned deps (torch, transformers, optimum
 
 ## convert_to_onnx.py — HF model -> ONNX
 
-Exports any supported HF checkpoint to the layout ortinfer expects
+Exports any supported HF checkpoint to the layout rsinfer expects
 (`model.onnx` + `tokenizer.json` + `config.json`), with dynamic batch/sequence
 axes and automatic external-data handling. Optional dynamic INT8 quantization.
 
@@ -20,7 +20,7 @@ uv run convert_to_onnx.py --repo cross-encoder/ms-marco-MiniLM-L-6-v2 \
   --kind rerank --out ../models/ms-marco --int8
 ```
 
-`--kind` maps ortinfer kinds to optimum tasks
+`--kind` maps rsinfer kinds to optimum tasks
 (`embedding`→feature-extraction, `rerank`/`zeroshot`→text-classification,
 `pii`→token-classification) and the script prints a ready-to-paste YAML
 snippet for `config.yaml`.

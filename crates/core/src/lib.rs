@@ -1,4 +1,4 @@
-//! ortinfer-core: ORT-powered inference engine.
+//! rsinfer-core: ORT-powered inference engine.
 //!
 //! Loads ONNX models (from disk or Hugging Face Hub), registers execution
 //! providers, and runs text pipelines: embeddings, reranking, zero-shot

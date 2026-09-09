@@ -29,8 +29,8 @@ impl Default for Metrics {
 		let requests: Family<Labels, Counter> = Family::default();
 		let duration: Family<Labels, Histogram> = Family::new_with_constructor(|| Histogram::new(exponential_buckets(0.005, 2.0, 12)));
 		let mut registry = Registry::default();
-		registry.register("ortinfer_http_requests", "HTTP requests by route and status", requests.clone()); // prometheus-client appends _total for counters
-		registry.register("ortinfer_http_request_duration_seconds", "HTTP request latency by route", duration.clone());
+		registry.register("rsinfer_http_requests", "HTTP requests by route and status", requests.clone()); // prometheus-client appends _total for counters
+		registry.register("rsinfer_http_request_duration_seconds", "HTTP request latency by route", duration.clone());
 		Self {
 			inner: Arc::new(Inner {
 				requests,

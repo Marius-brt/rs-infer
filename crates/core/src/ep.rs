@@ -60,7 +60,7 @@ fn dispatch(cfg: &ModelConfig, name: EpName) -> Option<ExecutionProviderDispatch
 				CoreMlComputeUnits::CpuAndNe => ep::coreml::ComputeUnits::CPUAndNeuralEngine,
 				CoreMlComputeUnits::CpuOnly => ep::coreml::ComputeUnits::CPUOnly,
 			};
-			Some(ep::CoreML::default().with_compute_units(units).with_model_cache_dir(std::env::temp_dir().join("ortinfer-coreml").display().to_string()).build())
+			Some(ep::CoreML::default().with_compute_units(units).with_model_cache_dir(std::env::temp_dir().join("rsinfer-coreml").display().to_string()).build())
 		}
 		#[cfg(feature = "ep-cuda")]
 		EpName::Cuda => Some(ep::CUDA::default().with_device_id(cfg.device_id).build()),

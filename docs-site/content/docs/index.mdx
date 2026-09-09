@@ -3,7 +3,7 @@ title: Overview
 description: An ONNX Runtime inference server in Rust — embeddings, rerankers, PII, and zero-shot classification.
 ---
 
-ort-infer is a Rust inference server built on
+rs-infer is a Rust inference server built on
 [ONNX Runtime](https://onnxruntime.ai) (via the [ort](https://ort.pyke.io)
 crate). One binary serves embeddings, rerankers, PII detection, and zero-shot
 classification through a single HTTP API.
@@ -12,13 +12,13 @@ Models are declared in a YAML config and fetched from the Hugging Face Hub at
 startup (or read from a local directory) — no manual model prep.
 
 <Cards>
-  <Card title="Quick start" href="/docs/usage">
+  <Card title="Quick start" href="/docs/setup/usage">
     Build, configure, and run the server — locally or with Docker.
   </Card>
-  <Card title="API reference" href="/docs/api">
+  <Card title="Server Endpoints" href="/docs/api">
     Every endpoint: request/response schemas, examples, and an interactive playground.
   </Card>
-  <Card title="Configuration" href="/docs/configuration">
+  <Card title="Configuration" href="/docs/setup/configuration">
     Tables of every server, model, and CLI option.
   </Card>
 </Cards>

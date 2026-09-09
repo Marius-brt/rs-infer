@@ -5,17 +5,17 @@ use axum::{
 };
 
 #[derive(Debug)]
-pub struct ApiError(pub ortinfer_core::Error);
+pub struct ApiError(pub rsinfer_core::Error);
 
-impl From<ortinfer_core::Error> for ApiError {
-	fn from(e: ortinfer_core::Error) -> Self {
+impl From<rsinfer_core::Error> for ApiError {
+	fn from(e: rsinfer_core::Error) -> Self {
 		Self(e)
 	}
 }
 
 impl From<anyhow::Error> for ApiError {
 	fn from(e: anyhow::Error) -> Self {
-		Self(ortinfer_core::Error::Config(format!("{e:#}")))
+		Self(rsinfer_core::Error::Config(format!("{e:#}")))
 	}
 }
 

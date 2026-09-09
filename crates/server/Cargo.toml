@@ -1,5 +1,5 @@
 [package]
-name = "ortinfer-server"
+name = "rsinfer-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,14 +7,14 @@ description = "HTTP inference API (vLLM-compatible embeddings/rerank + PII + zer
 
 [features]
 default = []
-ep-coreml = ["ortinfer-core/ep-coreml"]
-ep-cuda = ["ortinfer-core/ep-cuda"]
-ep-tensorrt = ["ortinfer-core/ep-tensorrt"]
-ep-nvrtx = ["ortinfer-core/ep-nvrtx"]
-lax-ep-matching = ["ortinfer-core/lax-ep-matching"]
+ep-coreml = ["rsinfer-core/ep-coreml"]
+ep-cuda = ["rsinfer-core/ep-cuda"]
+ep-tensorrt = ["rsinfer-core/ep-tensorrt"]
+ep-nvrtx = ["rsinfer-core/ep-nvrtx"]
+lax-ep-matching = ["rsinfer-core/lax-ep-matching"]
 
 [dependencies]
-ortinfer-core = { workspace = true }
+rsinfer-core = { workspace = true }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }

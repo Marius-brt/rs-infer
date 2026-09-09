@@ -1,5 +1,5 @@
 #!/usr/bin/env uv run
-"""Load-test an ortinfer server: latency percentiles, RPS, token throughput.
+"""Load-test an rsinfer server: latency percentiles, RPS, token throughput.
 
 Examples:
     uv run benchmark.py --url http://127.0.0.1:8080 --endpoint embeddings \

@@ -1,5 +1,5 @@
 use axum::{extract::State, Json};
-use ortinfer_core::{
+use rsinfer_core::{
 	Kind,
 	pipeline::pii,
 };
@@ -44,11 +44,11 @@ pub async fn pii_redact_h(State(state): State<AppState>, Json(req): Json<PiiReda
 	let mode = match req.mode.as_deref().unwrap_or("mask") {
 		"remove" => pii::RedactMode::Remove,
 		"mask" | "" => pii::RedactMode::Mask,
-		other => return Err(ApiError(ortinfer_core::Error::BadRequest(format!("unknown redact mode '{other}'")))),
+		other => return Err(ApiError(rsinfer_core::Error::BadRequest(format!("unknown redact mode '{other}'")))),
 	};
 	let mask_char = match req.mask_char.as_deref().unwrap_or("*").chars().collect::<Vec<char>>().as_slice() {
 		[c] => *c,
-		_ => return Err(ApiError(ortinfer_core::Error::BadRequest("`mask_char` must be a single character".into()))),
+		_ => return Err(ApiError(rsinfer_core::Error::BadRequest("`mask_char` must be a single character".into()))),
 	};
 
 	let texts = texts_or_400(&req.detect)?;
@@ -75,6 +75,6 @@ fn texts_or_400(req: &PiiRequest) -> Result<Vec<String>, ApiError> {
 	match (req.text.clone(), req.texts.clone()) {
 		(Some(t), None) => Ok(vec![t]),
 		(None, Some(v)) if !v.is_empty() => Ok(v),
-		_ => Err(ApiError(ortinfer_core::Error::BadRequest("provide exactly one of `text` or non-empty `texts`".into()))),
+		_ => Err(ApiError(rsinfer_core::Error::BadRequest("provide exactly one of `text` or non-empty `texts`".into()))),
 	}
 }

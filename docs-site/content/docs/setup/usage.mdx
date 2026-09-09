@@ -7,14 +7,14 @@ description: Build, configure, and run the server, locally or with Docker.
 
 ```bash
 # CPU-only build (works everywhere)
-cargo build --release -p ortinfer-server
+cargo build --release -p rsinfer-server
 
 # or macOS + CoreML / Linux + CUDA / TensorRT variants — see the Overview page
 make mac-coreml
 
 # point at a config and run
 cp configs/config.example.yaml config.yaml
-./target/release/ortinfer-server --config config.yaml
+./target/release/rsinfer-server --config config.yaml
 
 # verify it is up (requires jq)
 ./scripts/smoke.sh
@@ -26,7 +26,7 @@ logs show each model as it is resolved and loaded.
 
 ## Running with Docker
 
-The [`Dockerfile`](https://github.com/your-org/ort-infer/blob/main/Dockerfile)
+The [`Dockerfile`](https://github.com/marius-brt/rs-infer/blob/main/Dockerfile)
 builds a slim runtime image (`debian:bookworm-slim`) from the Rust source. The
 execution providers are chosen at **compile time** via the `FEATURES` build
 arg — GPU EP combos are `ep-cuda`, `ep-cuda,ep-tensorrt`, or
@@ -34,34 +34,34 @@ arg — GPU EP combos are `ep-cuda`, `ep-cuda,ep-tensorrt`, or
 
 ```bash
 # CPU-only image (works everywhere, smallest deps)
-docker build --build-arg FEATURES= -t ortinfer:cpu .
+docker build --build-arg FEATURES= -t rsinfer:cpu .
 
 # CUDA + TensorRT image (default)
-docker build -t ortinfer:gpu .
+docker build -t rsinfer:gpu .
 ```
 
 The image runs the binary as a non-root user, listens on port `8080`, and
-expects the config at `/etc/ortinfer/config.yaml`. Mount your model cache and
+expects the config at `/etc/rsinfer/config.yaml`. Mount your model cache and
 config, then run:
 
 ```bash
 docker run --rm -p 8080:8080 \
-  -v "$PWD/config.yaml:/etc/ortinfer/config.yaml:ro" \
-  -v ortinfer-hf-cache:/home/ortinfer/.cache/huggingface \
-  ortinfer:cpu
+  -v "$PWD/config.yaml:/etc/rsinfer/config.yaml:ro" \
+  -v rsinfer-hf-cache:/home/rsinfer/.cache/huggingface \
+  rsinfer:cpu
 
 # NVIDIA GPUs: pass the devices through and install the CUDA/cuDNN runtime libs
 # (or mount them) — the base image does not ship the GPU libraries.
 docker run --rm --gpus all -p 8080:8080 \
-  -v "$PWD/config.yaml:/etc/ortinfer/config.yaml:ro" \
-  ortinfer:gpu
+  -v "$PWD/config.yaml:/etc/rsinfer/config.yaml:ro" \
+  rsinfer:gpu
 ```
 
 Notes:
 
 * `bind` in the config still controls the listen address; leave it on
   `0.0.0.0:8080` so the port is reachable from the host.
-* Use a **named volume** (`-v ortinfer-hf-cache:...`) for the HF cache so
+* Use a **named volume** (`-v rsinfer-hf-cache:...`) for the HF cache so
   downloads survive container restarts, or set `server.hf_cache_dir`.
 * For GPU images, the CUDA/cuDNN/TensorRT shared libraries must be present in
   the container (bake them into a derived image or mount them); the slim base
@@ -72,7 +72,7 @@ Notes:
 
 Every endpoint (embeddings, rerank, PII, zero-shot, true/false) has a full
 OpenAPI page with request/response schemas, sample payloads, and an interactive
-playground in the [**API Reference**](/docs/api).
+playground in the [**Server Endpoints**](/docs/api).
 
 ## Adding a model
 
@@ -98,4 +98,4 @@ model's declared inputs and reads conventional output names (`logits`,
 Anything exported by `optimum-cli export onnx` (or the Xenova/onnx-community
 repos) is compatible.
 
-See the [Configuration](/docs/configuration) page for the full list of options.
+See the [Configuration](/docs/setup/configuration) page for the full list of options.

@@ -6,10 +6,10 @@ members = ["crates/core", "crates/server"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://example.local/ort-infer"
+repository = "https://github.com/marius-brt/rs-infer"
 
 [workspace.dependencies]
-ortinfer-core = { path = "crates/core" }
+rsinfer-core = { path = "crates/core" }
 ort = { version = "=2.0.0-rc.13" }
 tokenizers = { version = "0.22" }
 hf-hub = "0.5"

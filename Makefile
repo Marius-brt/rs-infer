@@ -1,10 +1,10 @@
 # Build profiles (ONNX Runtime prebuilt binaries do not combine all EPs).
-BIN = ortinfer-server
+BIN = rsinfer-server
 
 .PHONY: mac mac-coreml gpu-cuda gpu-trt gpu-rtx cpu test fmt lint docs docs-build docs-clean
 
 cpu:            ## CPU-only (works everywhere)
-	cargo build --release -p ortinfer-server
+	cargo build --release -p rsinfer-server
 
 mac-coreml:     ## macOS + CoreML/ANE
 	cargo build --release -p $(BIN) --features ep-coreml

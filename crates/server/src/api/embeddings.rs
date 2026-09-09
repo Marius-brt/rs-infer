@@ -1,6 +1,6 @@
 use axum::{extract::State, response::IntoResponse, Json};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ortinfer_core::{
+use rsinfer_core::{
 	Kind,
 	pipeline::embedding,
 };
@@ -17,7 +17,7 @@ pub async fn embeddings(State(state): State<AppState>, Json(req): Json<Embedding
 	let model = state.registry.resolve(req.model.as_deref(), Kind::Embedding)?;
 	let (texts, token_rows) = req.input.into_parts();
 	if texts.is_empty() && token_rows.is_empty() {
-		return Err(ApiError(ortinfer_core::Error::BadRequest("`input` is empty".into())));
+		return Err(ApiError(rsinfer_core::Error::BadRequest("`input` is empty".into())));
 	}
 
 	let (vectors, tokens) = if texts.is_empty() {
@@ -67,7 +67,7 @@ fn l2_normalize(v: &mut [f32]) {
 pub async fn embed_tei(State(state): State<AppState>, Json(req): Json<crate::dto::TeiEmbedRequest>) -> Result<impl IntoResponse, ApiError> {
 	let model = state.registry.resolve(None, Kind::Embedding)?;
 	if req.inputs.is_empty() {
-		return Err(ApiError(ortinfer_core::Error::BadRequest("`inputs` is empty".into())));
+		return Err(ApiError(rsinfer_core::Error::BadRequest("`inputs` is empty".into())));
 	}
 	let out = embedding::embed(&model, req.inputs, state.queue_wait).await?;
 	Ok(Json(out.vectors))

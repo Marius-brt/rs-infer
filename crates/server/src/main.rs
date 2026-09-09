@@ -8,14 +8,14 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context;
 use clap::Parser;
-use ortinfer_core::Registry;
+use rsinfer_core::Registry;
 use tokio::net::TcpListener;
 use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer};
 
 use crate::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "ortinfer", about = "ONNX Runtime inference server: embeddings, rerank, PII, zero-shot")]
+#[command(name = "rsinfer", about = "ONNX Runtime inference server: embeddings, rerank, PII, zero-shot")]
 struct Args {
 	/// Path to the TOML model/server config.
 	#[arg(short, long, default_value = "config.yaml")]
@@ -31,12 +31,12 @@ async fn main() -> anyhow::Result<()> {
 	if args.config.extension().map(|e| e == "toml").unwrap_or(false) {
 		anyhow::bail!("TOML configs are no longer supported; convert {} to YAML (see configs/config.example.yaml)", args.config.display());
 	}
-	let config: ortinfer_core::Config = serde_norway::from_str(&text).context("invalid YAML config")?;
+	let config: rsinfer_core::Config = serde_norway::from_str(&text).context("invalid YAML config")?;
 	validate(&config)?;
 	let config = Arc::new(config);
 
 	tracing::info!(
-		"ortinfer v{} starting with {} model(s); EP features: coreml={} cuda={} tensorrt={} nvrtx={}",
+		"rsinfer v{} starting with {} model(s); EP features: coreml={} cuda={} tensorrt={} nvrtx={}",
 		env!("CARGO_PKG_VERSION"),
 		config.models.len(),
 		cfg!(feature = "ep-coreml"),
@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
 	Ok(())
 }
 
-fn validate(config: &ortinfer_core::Config) -> anyhow::Result<()> {
+fn validate(config: &rsinfer_core::Config) -> anyhow::Result<()> {
 	let mut names = std::collections::HashSet::new();
 	for m in &config.models {
 		if !names.insert(m.name.clone()) {

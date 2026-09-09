@@ -1,4 +1,4 @@
-# ort-infer documentation site
+# rs-infer documentation site
 
 The public documentation is built with [Fumadocs](https://fumadocs.dev)
 (a Next.js + Tailwind documentation framework) and published to GitHub Pages.

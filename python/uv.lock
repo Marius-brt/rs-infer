@@ -1197,7 +1197,7 @@ onnxruntime = [
 ]
 
 [[package]]
-name = "ortinfer-utils"
+name = "rsinfer-utils"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

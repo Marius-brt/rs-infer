@@ -1,0 +1,75 @@
+---
+title: Benchmarking
+description: Load-test any endpoint with the HTTP benchmark client and read the results.
+---
+
+The repo ships a small async load tester —
+[`python/benchmark.py`](https://github.com/marius-brt/rs-infer/blob/main/python/benchmark.py)
+— that generates synthetic texts and hammers every endpoint type against a
+running server.
+
+## Setup
+
+```bash
+# terminal 1 — build & run the server (any profile, e.g. `make cpu`)
+./target/release/rsinfer-server --config config.yaml
+
+# terminal 2
+cd python && uv sync
+```
+
+## Running a benchmark
+
+```bash
+# embeddings: 16 inputs per request, 8 in flight, 300 requests
+uv run benchmark.py --endpoint embeddings --batch 16 --concurrency 8 --total 300
+
+# reranker against a specific configured model
+uv run benchmark.py --endpoint rerank --model ms-marco --concurrency 4 --total 100
+
+# PII detection, saving a machine-readable summary
+uv run benchmark.py --endpoint pii-detect --batch 4 --len 120 --json /tmp/pii.json
+```
+
+The same tool is installed as `rsinfer-bench` (`uv run rsinfer-bench …`).
+
+### Options
+
+| Flag           | Default             | Notes                                             |
+| -------------- | ------------------- | ------------------------------------------------- |
+| `--url`        | `http://127.0.0.1:8080` | server base url                               |
+| `--endpoint`   | `embeddings`        | one of `embeddings`, `embed-tei`, `rerank`, `score`, `pii-detect`, `pii-redact`, `classify`, `true-false` |
+| `--model`      | first on server     | model name as declared in `config.yaml`           |
+| `--batch`      | `8`                 | inputs (documents / texts) per request            |
+| `--len`        | `40`                | words per generated text                          |
+| `--concurrency`| `4`                 | parallel in-flight requests                       |
+| `--total`      | `100`               | total requests                                    |
+| `--warmup`     | `5`                 | requests excluded from stats                      |
+| `--timeout`    | `120`               | per-request timeout (seconds)                     |
+| `--seed`       | `42`                | deterministic payload generation                  |
+| `--json`       | —                   | write a JSON summary to this path                 |
+
+## Reading the output
+
+The summary reports, after warmup:
+
+- **Latency** — p50 / p90 / p99 per request
+- **Throughput** — req/s, docs/s (inputs pushed through per second), and token
+  throughput taken from `usage.total_tokens` in the responses
+
+To separate HTTP-layer cost from model cost, scrape
+[`GET /metrics`](/docs/api) while the benchmark runs: `rsinfer_http_requests_total`
+counts requests by route + status, and `rsinfer_http_request_duration_seconds`
+is a histogram per route (client-side latency additionally includes network and
+queueing time).
+
+## Tips for fair numbers
+
+- Always compare a build profile against the same `--batch`/`--len`; document
+  throughput scales sub-linearly once you saturate the per-model queue.
+- Increase `--concurrency` past your `queue`/worker settings only to observe
+  backpressure — useful for finding the knee, not for peak throughput.
+- First requests after startup pay graph-optimize and EP-init costs; raise
+  `--warmup` accordingly (the defaults exclude 5).
+- On GPU builds, re-run the same command per execution provider
+  (`make gpu-cuda` vs `make gpu-trt`) to compare EP selection.

@@ -1,4 +1,8 @@
-# ort-infer
+<p align="center">
+  <img src="docs-site/public/logo.png" alt="RS Infer logo" width="128">
+</p>
+
+# RS Infer
 
 A Rust inference server on top of [ONNX Runtime](https://onnxruntime.ai) via the
 [ort](https://ort.pyke.io) crate. One binary serves embeddings, rerankers, PII
@@ -24,7 +28,7 @@ Build for your platform, then run:
 ```bash
 make <profile>                                   # see table below
 cp configs/config.example.yaml config.yaml       # pick your models
-./target/release/ortinfer-server --config config.yaml
+./target/release/rsinfer-server --config config.yaml
 ./scripts/smoke.sh                               # requires jq
 ```
 
@@ -41,13 +45,15 @@ First boot downloads the configured models into the HF cache (`HF_HOME` respecte
 ## Documentation
 
 Full documentation lives at
-[**https://<your-user>.github.io/ort-infer/**](https://<your-user>.github.io/ort-infer/)
+[**https://marius-brt.github.io/rs-infer/**](https://marius-brt.github.io/rs-infer/)
 (published via GitHub Pages from the [`docs-site/`](docs-site/) Fumadocs app).
 
 - [Overview](docs-site/content/docs/index.mdx)
-- [Usage](docs-site/content/docs/usage.mdx) — endpoints, request examples, adding a model
-- [Configuration](docs-site/content/docs/configuration.mdx) — tables of every config and CLI option, logging levels
-- API reference (under `/docs/api` on the site) — generated from [`docs-site/openapi.yaml`](docs-site/openapi.yaml) via [Fumadocs OpenAPI](https://www.fumadocs.dev/docs/integrations/openapi); edit the YAML to update it
+- [Usage](docs-site/content/docs/setup/usage.mdx) — endpoints, request examples, adding a model
+- [Configuration](docs-site/content/docs/setup/configuration.mdx) — tables of every config and CLI option, logging levels
+- [Converting models to ONNX](docs-site/content/docs/utility/convert-models.mdx) — HF checkpoint → `model.onnx` + tokenizer, INT8/FP16, local `path` models
+- [Benchmarking](docs-site/content/docs/utility/benchmarking.mdx) — load testing with `python/benchmark.py`, reading p50/p99 and throughput
+- Server Endpoints (under `/docs/api` on the site) — generated from [`docs-site/openapi.yaml`](docs-site/openapi.yaml) via [Fumadocs OpenAPI](https://www.fumadocs.dev/docs/integrations/openapi); edit the YAML to update it
 
 To work on the docs locally:
 

@@ -1,5 +1,5 @@
-# ortinfer server configuration (YAML).
-# Run:  ortinfer-server --config configs/config.example.yaml
+# rsinfer server configuration (YAML).
+# Run:  rsinfer-server --config configs/config.example.yaml
 
 server:
   bind: 0.0.0.0:8080

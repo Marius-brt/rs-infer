@@ -1,5 +1,5 @@
 #!/usr/bin/env uv run
-"""Convert a Hugging Face model to ONNX for use with ortinfer.
+"""Convert a Hugging Face model to ONNX for use with rsinfer.
 
 Wraps optimum's exporters (dynamic batch/sequence axes, external data for
 large models) and optionally applies dynamic INT8 quantization.
@@ -17,7 +17,7 @@ import shutil
 import sys
 from pathlib import Path
 
-# ortinfer `kind` -> optimum task
+# rsinfer `kind` -> optimum task
 TASK_BY_KIND = {
     "embedding": "feature-extraction",
     "rerank": "text-classification",
@@ -30,8 +30,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--repo", required=True, help="Hugging Face model id")
     p.add_argument("--task", help="optimum task (feature-extraction, text-classification, token-classification, ...)")
-    p.add_argument("--kind", choices=sorted(TASK_BY_KIND), help="ortinfer model kind; maps to a task automatically")
-    p.add_argument("--out", required=True, help="output directory (usable directly as ortinfer `path`)")
+    p.add_argument("--kind", choices=sorted(TASK_BY_KIND), help="rsinfer model kind; maps to a task automatically")
+    p.add_argument("--out", required=True, help="output directory (usable directly as rsinfer `path`)")
     p.add_argument("--opset", type=int, default=17, help="ONNX opset (default 17)")
     p.add_argument("--fp16", action="store_true", help="export in half precision (CUDA host only)")
     p.add_argument("--int8", action="store_true", help="post-export dynamic INT8 quantization (CPU-optimized)")
@@ -65,7 +65,7 @@ def convert(args: argparse.Namespace) -> Path:
         subfolder=args.subfolder,
     )
 
-    # optimum writes into an `onnx/` subdir for some tasks; flatten for ortinfer simplicity
+    # optimum writes into an `onnx/` subdir for some tasks; flatten for rsinfer simplicity
     nested = out / "onnx"
     graph = out / "model.onnx"
     if not graph.exists() and (nested / "model.onnx").exists():
@@ -109,7 +109,7 @@ def print_yaml_snippet(args: argparse.Namespace, out: Path) -> None:
             values = " ".join(labels.values()).lower()
             if "entail" in values or "contradict" in values:
                 kind = "zeroshot"
-    print("\n# add to your ortinfer config.yaml:")
+    print("\n# add to your rsinfer config.yaml:")
     print("models:")
     print(f"  - name: {name}")
     print(f"    kind: {kind}")

@@ -1,5 +1,5 @@
 use axum::{extract::State, Json};
-use ortinfer_core::{
+use rsinfer_core::{
 	Kind,
 	pipeline::rerank,
 };
@@ -15,7 +15,7 @@ use crate::{
 pub async fn rerank_h(State(state): State<AppState>, Json(req): Json<RerankRequest>) -> Result<Json<RerankResponse>, ApiError> {
 	let model = state.registry.resolve(req.model.as_deref(), Kind::Rerank)?;
 	if req.documents.is_empty() {
-		return Err(ApiError(ortinfer_core::Error::BadRequest("`documents` is empty".into())));
+		return Err(ApiError(rsinfer_core::Error::BadRequest("`documents` is empty".into())));
 	}
 	let outcome = rerank::score_pairs(&model, req.query, req.documents.clone(), state.queue_wait).await?;
 	let return_docs = req.return_documents.unwrap_or(true);
@@ -47,7 +47,7 @@ pub async fn score_h(State(state): State<AppState>, Json(req): Json<ScoreRequest
 	let a = req.text_1.into_vec();
 	let b = req.text_2.into_vec();
 	if a.is_empty() || b.is_empty() {
-		return Err(ApiError(ortinfer_core::Error::BadRequest("text_1/text_2 must not be empty".into())));
+		return Err(ApiError(rsinfer_core::Error::BadRequest("text_1/text_2 must not be empty".into())));
 	}
 	let pairs: Vec<(String, String)> = a.iter().flat_map(|x| b.iter().map(move |y| (x.clone(), y.clone()))).collect();
 	let outcome = rerank::score_text_pairs(&model, pairs.clone(), state.queue_wait).await?;

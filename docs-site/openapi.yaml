@@ -1,9 +1,9 @@
 openapi: 3.1.0
 info:
-  title: ort-infer HTTP API
+  title: RS Infer HTTP API
   version: 0.1.0
   description: |
-    The [ort-infer](https://ort.pyke.io) server exposes four model families through one HTTP
+    The RS Infer server exposes four model families through one HTTP
     API: **embeddings**, **rerankers**, **PII detection / redaction**, and **zero-shot
     classification** (including a true/false entailment judgement). Model ids come from
     the server's YAML config; when `model` is omitted the default model of the kind is
@@ -11,7 +11,7 @@ info:
 
     All bodies are JSON unless otherwise noted. Requests are subject to the server's
     `max_body_mb`, `request_timeout_ms`, and per-model queue limits — see the
-    [Configuration guide](/docs/configuration) for the returned HTTP status codes.
+    [Configuration guide](/docs/setup/configuration) for the returned HTTP status codes.
   license:
     name: MIT
     identifier: MIT
@@ -527,8 +527,8 @@ paths:
       summary: /metrics
       description: |
         Prometheus metrics.
-        Text exposition format. Exports `ortinfer_http_requests_total` (by route +
-        status) and `ortinfer_http_request_duration_seconds` (histogram, by route).
+        Text exposition format. Exports `rsinfer_http_requests_total` (by route +
+        status) and `rsinfer_http_request_duration_seconds` (histogram, by route).
       responses:
         '200':
           description: Prometheus text format.
@@ -537,9 +537,9 @@ paths:
               schema:
                 type: string
                 example: |
-                  # HELP ortinfer_http_requests_total Total HTTP requests
-                  # TYPE ortinfer_http_requests_total counter
-                  ortinfer_http_requests_total{route="/v1/embeddings",status="200"} 42
+                  # HELP rsinfer_http_requests_total Total HTTP requests
+                  # TYPE rsinfer_http_requests_total counter
+                  rsinfer_http_requests_total{route="/v1/embeddings",status="200"} 42
 
 components:
   schemas:

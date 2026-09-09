@@ -1510,45 +1510,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ortinfer-core"
-version = "0.1.0"
-dependencies = [
- "hf-hub",
- "ndarray",
- "ort",
- "serde",
- "serde_json",
- "serde_norway",
- "thiserror",
- "tokenizers",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "ortinfer-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.22.1",
- "clap",
- "http-body-util",
- "ortinfer-core",
- "prometheus-client",
- "reqwest",
- "serde",
- "serde_json",
- "serde_norway",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1872,6 +1833,45 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rsinfer-core"
+version = "0.1.0"
+dependencies = [
+ "hf-hub",
+ "ndarray",
+ "ort",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "thiserror",
+ "tokenizers",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rsinfer-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "http-body-util",
+ "prometheus-client",
+ "reqwest",
+ "rsinfer-core",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

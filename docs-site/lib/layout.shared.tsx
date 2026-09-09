@@ -1,11 +1,15 @@
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
-import { appName, gitConfig } from './shared';
+import { assetBase, appName, gitConfig } from './shared';
 
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      // JSX supported
-      title: appName,
+      title: (
+        <span className="flex items-center gap-2 font-semibold">
+          <img src={`${assetBase}/logo.png`} alt="" className="h-7 w-auto" />
+          {appName}
+        </span>
+      ),
     },
     links: [
       {

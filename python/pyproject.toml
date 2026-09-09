@@ -1,7 +1,7 @@
 [project]
-name = "ortinfer-utils"
+name = "rsinfer-utils"
 version = "0.1.0"
-description = "Model export (HF -> ONNX) and HTTP benchmarking utilities for ortinfer"
+description = "Model export (HF -> ONNX) and HTTP benchmarking utilities for rsinfer"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.4",
@@ -18,4 +18,4 @@ dependencies = [
 
 [project.scripts]
 convert-to-onnx = "convert_to_onnx:main"
-ortinfer-bench = "benchmark:main"
+rsinfer-bench = "benchmark:main"

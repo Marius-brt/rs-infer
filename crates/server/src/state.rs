@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use ortinfer_core::{config::Config as AppConfig, Registry};
+use rsinfer_core::{config::Config as AppConfig, Registry};
 
 use crate::metrics::Metrics;
 

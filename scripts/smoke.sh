@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke-test a running ortinfer server: SMOKE=http://host:port ./scripts/smoke.sh
+# Smoke-test a running rsinfer server: SMOKE=http://host:port ./scripts/smoke.sh
 set -euo pipefail
 SMOKE=${SMOKE:-http://127.0.0.1:8080}
 echo "== health";    curl -sf $SMOKE/health | jq -c
