@@ -1,0 +1,6 @@
+target/
+.git/
+docs-site/
+models/
+**/*.pyc
+__pycache__/
