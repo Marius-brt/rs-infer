@@ -41,6 +41,12 @@ cp configs/config.example.yaml config.yaml       # pick your models
 | Linux + TensorRT-RTX | `make gpu-rtx` | consumer GeForce/RTX |
 
 First boot downloads the configured models into the HF cache (`HF_HOME` respected).
+To pre-fetch a model into a plain folder instead (usable via `path:`, no startup download):
+
+```bash
+./target/release/rsinfer-server download Xenova/multilingual-e5-small models/e5-small
+# options: --revision, --file onnx/model_fp16.onnx, --subfolder onnx, --tokenizer-hf <repo>
+```
 
 ## Documentation
 

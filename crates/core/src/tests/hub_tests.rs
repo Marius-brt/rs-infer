@@ -31,3 +31,10 @@ fn explicit_file_wins() {
 	let cfg = crate::config::ModelConfig::default_for_test(Some("onnx/model_int8.onnx"));
 	assert_eq!(select_remote(&sib, cfg.subfolder.as_deref(), &candidates_for(&cfg, MODEL_CANDIDATES)).unwrap(), "onnx/model_int8.onnx");
 }
+
+#[test]
+fn download_requires_hf() {
+	let cfg = crate::config::ModelConfig::default_for_test(None);
+	let err = download_to(&cfg, Path::new("unused"), None).unwrap_err();
+	assert!(matches!(err, Error::Config(_)));
+}

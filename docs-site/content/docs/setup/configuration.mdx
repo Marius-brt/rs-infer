@@ -11,7 +11,7 @@ The file has two top-level sections: `server` (global options) and `models`
 
 ## CLI
 
-`rsinfer-server` takes a single flag:
+Serve mode (the default) takes a single flag:
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
@@ -20,6 +20,28 @@ The file has two top-level sections: `server` (global options) and `models`
 ```bash
 rsinfer-server --config configs/config.example.yaml
 ```
+
+### `rsinfer-server download <repo> <out>`
+
+Downloads a model's ONNX graph + tokenizer files from the Hugging Face Hub
+into `<out>` (created if missing), so it can be referenced with `path:` and
+served without any startup download:
+
+```bash
+rsinfer-server download Xenova/multilingual-e5-small models/e5-small
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--revision <REF>` | `main` | Branch, tag, or commit hash |
+| `--file <PATH>` | auto | Pin an exact graph path (e.g. `onnx/model_fp16.onnx`); overrides the model.onnx > fp16 > quantized preference |
+| `--subfolder <DIR>` | unset | Subfolder inside the repo to look in |
+| `--tokenizer-hf <REPO>` | unset | Repo to take `tokenizer.json` / `config.json` from, for model-only ONNX repos |
+
+`HF_HOME` (or `HF_TOKEN` for gated repos) are honored; the download lands in
+`<out>` as a self-contained folder (graph keeps its repo-relative path, e.g.
+`onnx/model.onnx` + `onnx/model.onnx_data`, with `tokenizer.json` and
+`config.json` at the folder root).
 
 Verbosity is controlled by the `RUST_LOG` environment variable (see
 [Logging](#logging)).

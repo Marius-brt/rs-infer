@@ -30,7 +30,52 @@ pub fn resolve(cfg: &ModelConfig, cache_dir: Option<&Path>) -> Result<Resolved> 
 	if let Some(dir) = &cfg.path {
 		return resolve_local(cfg, dir);
 	}
-	resolve_hf(cfg, cache_dir)
+	resolve_hf(cfg, cache_dir).map(|(r, _)| r)
+}
+
+/// Repo-relative graph file names backing a [`Resolved`] from [`resolve_hf`].
+#[derive(Debug)]
+struct HubFiles {
+	model: String,
+	companion: Option<String>,
+}
+
+/// Resolve a hub model and copy its files into `out` (created if missing) using the
+/// layout understood by [`resolve_local`], so the folder works via `path:` in a config.
+/// Returns the local [`Resolved`] after verifying the materialized layout.
+pub fn download_to(cfg: &ModelConfig, out: &Path, hf_cache: Option<&Path>) -> Result<Resolved> {
+	if cfg.hf.is_none() {
+		return Err(Error::Config(format!("model '{}': `hf` repo id required to download", cfg.name)));
+	}
+	let (resolved, files) = resolve_hf(cfg, hf_cache)?;
+	std::fs::create_dir_all(out)?;
+	let copy = |src: &Path, rel: &str| -> Result<PathBuf> {
+		let dst = out.join(rel);
+		if let Some(parent) = dst.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
+		tracing::info!(from = %src.display(), to = %dst.display(), "copying hub file");
+		std::fs::copy(src, &dst)?;
+		Ok(dst)
+	};
+	// The graph keeps its repo-relative path (external-data refs inside the .onnx
+	// are relative to the model file); aux files land where resolve_local expects them.
+	let model = copy(&resolved.model, &files.model)?;
+	if let Some(companion) = &files.companion {
+		copy(&resolved.model.with_file_name(companion.rsplit('/').next().unwrap_or(companion)), companion)?;
+	}
+	copy(&resolved.tokenizer, "tokenizer.json")?;
+	if let Some(src) = &resolved.config_json {
+		copy(src, "config.json")?;
+	}
+	if let Some(src) = &resolved.pooling_config {
+		copy(src, POOLING_CANDIDATES[0])?;
+	}
+	let mut local = cfg.clone();
+	local.hf = None;
+	local.path = Some(out.to_path_buf());
+	local.file = Some(model.file_name().and_then(|n| n.to_str()).unwrap_or("model.onnx").to_string());
+	resolve_local(&local, out)
 }
 
 fn candidates_for<'a>(cfg: &'a ModelConfig, defaults: &'a [&'a str]) -> Vec<&'a str> {
@@ -99,7 +144,7 @@ fn hub_api(cfg_hf_cache: Option<&Path>) -> Result<Api> {
 	builder.build().map_err(|e| Error::Hub(e.to_string()))
 }
 
-fn resolve_hf(cfg: &ModelConfig, hf_cache: Option<&Path>) -> Result<Resolved> {
+fn resolve_hf(cfg: &ModelConfig, hf_cache: Option<&Path>) -> Result<(Resolved, HubFiles)> {
 	let id = cfg.hf.as_deref().expect("checked by caller");
 	tracing::debug!(model = cfg.name.as_str(), repo = id, revision = %cfg.revision, "resolving model from Hugging Face Hub");
 	let api = hub_api(hf_cache)?;
@@ -130,10 +175,12 @@ fn resolve_hf(cfg: &ModelConfig, hf_cache: Option<&Path>) -> Result<Resolved> {
 		.ok_or_else(|| Error::MissingFile(cfg.name.clone(), format!("no model.onnx/fp16/quantized ONNX graph found in {id} (files: {:?})", sample(&siblings))))?;
 	let model = download(id, &model_name)?;
 	// Large exports store weights in a sibling `.onnx_data` file; ORT resolves it relative to model.onnx.
-	if let Some(companion) = model_name.strip_suffix(".onnx").map(|stem| format!("{stem}.onnx_data")) {
-		if siblings.contains(&companion) {
-			download(id, &companion)?;
-		}
+	let companion = model_name
+		.strip_suffix(".onnx")
+		.map(|stem| format!("{stem}.onnx_data"))
+		.filter(|c| siblings.contains(c));
+	if let Some(c) = &companion {
+		download(id, c)?;
 	}
 
 	// Auxiliary files (tokenizer, config) may live in a separate repo for model-only ONNX exports.
@@ -170,7 +217,10 @@ fn resolve_hf(cfg: &ModelConfig, hf_cache: Option<&Path>) -> Result<Resolved> {
 		Some(t) => format!("hf:{id}@{}+aux:{t}", cfg.revision),
 		None => format!("hf:{id}@{}", cfg.revision),
 	};
-	Ok(Resolved { model, tokenizer, config_json, pooling_config, source })
+	Ok((
+		Resolved { model, tokenizer, config_json, pooling_config, source },
+		HubFiles { model: model_name, companion },
+	))
 }
 
 fn sample(siblings: &[String]) -> Vec<&str> {

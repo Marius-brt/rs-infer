@@ -4,10 +4,10 @@ mod error;
 mod metrics;
 mod state;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::{Path, PathBuf}, sync::Arc};
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use rsinfer_core::Registry;
 use tokio::net::TcpListener;
 use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer};
@@ -17,19 +17,112 @@ use crate::state::AppState;
 #[derive(Parser)]
 #[command(name = "rsinfer", about = "ONNX Runtime inference server: embeddings, rerank, PII, zero-shot")]
 struct Args {
-	/// Path to the TOML model/server config.
+	/// Path to the YAML model/server config (serve mode).
 	#[arg(short, long, default_value = "config.yaml")]
 	config: PathBuf,
+	#[command(subcommand)]
+	command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+	/// Download an ONNX model (+ tokenizer) from the Hugging Face Hub into a folder,
+	/// so it can be referenced via `path:` in the server config without any downloading at startup.
+	Download {
+		/// HF repo id, e.g. Xenova/multilingual-e5-small
+		repo: String,
+		/// Destination folder; created if missing (e.g. models/e5-small).
+		out: PathBuf,
+		/// Repo revision: branch, tag, or commit hash.
+		#[arg(long, default_value = "main")]
+		revision: String,
+		/// Pin an exact graph path in the repo, e.g. onnx/model_fp16.onnx
+		/// (overrides the default model.onnx > fp16 > quantized preference).
+		#[arg(long)]
+		file: Option<String>,
+		/// Subfolder inside the repo to also look in, e.g. onnx.
+		#[arg(long)]
+		subfolder: Option<String>,
+		/// HF repo to take tokenizer.json / config.json from, for model-only ONNX repos.
+		#[arg(long)]
+		tokenizer_hf: Option<String>,
+	},
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
 	init_tracing();
 	let args = Args::parse();
+	match args.command {
+		Some(Command::Download { repo, out, revision, file, subfolder, tokenizer_hf }) => {
+			download(repo, out, revision, file, subfolder, tokenizer_hf).await
+		}
+		None => serve(args.config).await,
+	}
+}
 
-	let text = std::fs::read_to_string(&args.config).with_context(|| format!("cannot read config {}", args.config.display()))?;
-	if args.config.extension().map(|e| e == "toml").unwrap_or(false) {
-		anyhow::bail!("TOML configs are no longer supported; convert {} to YAML (see configs/config.example.yaml)", args.config.display());
+async fn download(repo: String, out: PathBuf, revision: String, file: Option<String>, subfolder: Option<String>, tokenizer_hf: Option<String>) -> anyhow::Result<()> {
+	let cfg = rsinfer_core::ModelConfig {
+		name: repo.clone(),
+		hf: Some(repo.clone()),
+		revision: revision.clone(),
+		subfolder,
+		file,
+		tokenizer_hf,
+		..Default::default()
+	};
+	let target = out.clone();
+	tokio::task::spawn_blocking(move || rsinfer_core::hub::download_to(&cfg, &target, None))
+		.await
+		.map_err(|e| anyhow::anyhow!("download task failed: {e}"))?
+		.map_err(|e| anyhow::anyhow!("{e}"))?;
+	println!("downloaded {repo}@{revision} into {}", out.display());
+	list_files(&out, &out)?;
+	println!("\nuse it offline via a config entry:");
+	let name = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| repo.rsplit('/').next().unwrap_or(&repo).to_string());
+	println!("  - name: {name}\n    kind: embedding   # or rerank | pii | zeroshot\n    path: {}", out.display());
+	Ok(())
+}
+
+fn list_files(root: &Path, dir: &Path) -> anyhow::Result<()> {
+	let mut entries = Vec::new();
+	collect_files(dir, &mut entries)?;
+	entries.sort();
+	for path in entries {
+		let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+		let rel = path.strip_prefix(root).unwrap_or(&path);
+		println!("  {:>9}  {}", human_size(size), rel.display());
+	}
+	Ok(())
+}
+
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+	for e in std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))? {
+		let path = e?.path();
+		if path.is_dir() {
+			collect_files(&path, out)?;
+		} else {
+			out.push(path);
+		}
+	}
+	Ok(())
+}
+
+fn human_size(bytes: u64) -> String {
+	const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+	let mut size = bytes as f64;
+	let mut unit = 0;
+	while size >= 1024.0 && unit < UNITS.len() - 1 {
+		size /= 1024.0;
+		unit += 1;
+	}
+	if unit == 0 { format!("{bytes} {}", UNITS[unit]) } else { format!("{size:.1} {}", UNITS[unit]) }
+}
+
+async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
+	let text = std::fs::read_to_string(&config_path).with_context(|| format!("cannot read config {}", config_path.display()))?;
+	if config_path.extension().map(|e| e == "toml").unwrap_or(false) {
+		anyhow::bail!("TOML configs are no longer supported; convert {} to YAML (see configs/config.example.yaml)", config_path.display());
 	}
 	let config: rsinfer_core::Config = serde_norway::from_str(&text).context("invalid YAML config")?;
 	validate(&config)?;

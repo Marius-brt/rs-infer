@@ -234,21 +234,19 @@ fn default_threshold() -> f64 {
 	0.5
 }
 
-#[cfg(test)]
-impl ModelConfig {
-	#[doc(hidden)]
-	pub fn default_for_test(file: Option<&str>) -> Self {
+impl Default for ModelConfig {
+	fn default() -> Self {
 		Self {
-			name: "test".into(),
+			name: String::new(),
 			kind: Kind::Embedding,
 			path: None,
 			hf: None,
-			revision: "main".into(),
+			revision: default_revision(),
 			subfolder: None,
-			file: file.map(str::to_string),
+			file: None,
 			tokenizer_hf: None,
 			max_len: None,
-			replicas: 1,
+			replicas: default_replicas(),
 			intra_threads: 0,
 			eps: vec![],
 			default: false,
@@ -259,12 +257,20 @@ impl ModelConfig {
 			hypothesis_template: default_hypothesis(),
 			entailment_label: default_entail_label(),
 			contradiction_label: default_contradiction_label(),
-			threshold: 0.5,
+			threshold: default_threshold(),
 			ort_log_level: OrtLogLevel::Warn,
 			coreml_compute_units: CoreMlComputeUnits::All,
 			trt_engine_cache: None,
 			device_id: 0,
 		}
+	}
+}
+
+#[cfg(test)]
+impl ModelConfig {
+	#[doc(hidden)]
+	pub fn default_for_test(file: Option<&str>) -> Self {
+		Self { name: "test".into(), file: file.map(str::to_string), replicas: 1, ..Default::default() }
 	}
 }
 
