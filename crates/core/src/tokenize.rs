@@ -92,6 +92,24 @@ impl Encoder {
 		Ok(Self::from_encodings(encodings, false))
 	}
 
+	/// Token ids per text, without batch padding (right-pad stripped via the
+	/// attention mask). For feeding into the cross-request batcher.
+	pub fn encode_rows(&self, texts: &[String]) -> Result<Vec<Vec<u32>>> {
+		let inputs: Vec<EncodeInput<'_>> = texts.iter().map(|t| EncodeInput::from(Cow::Borrowed(t.as_str()))).collect();
+		let encodings = self
+			.tokenizer
+			.encode_batch(inputs, true)
+			.map_err(|e| Error::Tokenize(e.to_string()))?;
+		Ok(encodings
+			.iter()
+			.map(|enc| {
+				let mask = enc.get_attention_mask();
+				let real = mask.iter().position(|&m| m == 0).unwrap_or(mask.len());
+				enc.get_ids()[..real].to_vec()
+			})
+			.collect())
+	}
+
 	pub fn encode_texts_offsets(&self, texts: &[String]) -> Result<Encoded> {
 		let inputs: Vec<EncodeInput<'_>> = texts.iter().map(|t| EncodeInput::from(Cow::Borrowed(t.as_str()))).collect();
 		let encodings = self

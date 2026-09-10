@@ -35,8 +35,37 @@ models:
 	assert_eq!(cfg.models[0].coreml_compute_units, CoreMlComputeUnits::CpuAndGpu);
 	assert_eq!(cfg.models[1].kind, Kind::Rerank);
 	assert_eq!(cfg.models[2].threshold, 0.6);
+	assert_eq!(cfg.models[0].batching, None);
 	assert_eq!(cfg.models[0].hypothesis_template, "The text is about {label}.");
 	cfg.models.iter().for_each(|m| m.validate().unwrap());
+}
+
+#[test]
+fn parses_batching_block_with_defaults() {
+	let yaml_src = r#"
+models:
+  - name: x
+    kind: embedding
+    path: models/x
+    batching: { max_rows: 32 }
+"#;
+	let cfg: Config = serde_norway::from_str(yaml_src).unwrap();
+	let b = cfg.models[0].batching.unwrap();
+	assert_eq!(b.max_rows, 32);
+	assert_eq!(b.max_tokens, 4096);
+	assert_eq!(b.queue_rows, 1024);
+}
+
+#[test]
+fn rejects_unknown_batching_field() {
+	let yaml_src = r#"
+models:
+  - name: x
+    kind: embedding
+    path: models/x
+    batching: { nonsense: 1 }
+"#;
+	assert!(serde_norway::from_str::<Config>(yaml_src).is_err());
 }
 
 #[test]

@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use ort::session::Session;
 
 use crate::{
+	batcher::EmbedBatcher,
 	config::{Kind, ModelConfig, Pooling, Scoring},
 	hub::Resolved,
 	pool::SessionPool,
@@ -43,7 +44,9 @@ pub enum Meta {
 pub struct LoadedModel {
 	pub cfg: ModelConfig,
 	pub encoder: Encoder,
-	pub pool: SessionPool,
+	pub pool: Arc<SessionPool>,
+	/// Present only when `batching:` is configured for this embedding model.
+	pub batcher: Option<Arc<EmbedBatcher>>,
 	pub meta: Meta,
 	pub source: String,
 	pub eps: Vec<String>,

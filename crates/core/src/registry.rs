@@ -92,6 +92,21 @@ impl Registry {
 		Ok(model.clone())
 	}
 
+	/// Spawns dynamic-batching workers for embedding models that have `batching:`
+	/// configured. Must run on the tokio runtime (models load on blocking threads).
+	pub fn start_batchers(&self) {
+		let mut n = 0;
+		for m in self.models.values() {
+			if let Some(b) = &m.batcher {
+				b.start();
+				n += 1;
+			}
+		}
+		if n > 0 {
+			tracing::info!(models = n, "dynamic embedding batching enabled");
+		}
+	}
+
 	pub fn infos(&self) -> Vec<ModelInfo> {
 		let mut out: Vec<ModelInfo> = self
 			.models
@@ -212,10 +227,23 @@ pub fn load_model(cfg: &ModelConfig, hf_cache: Option<&std::path::Path>, max_que
 		ram_total_mb = rss_after,
 		"model loaded"
 	);
+	let pool = Arc::new(SessionPool::new(sessions, max_queue));
+	// Cross-request batching is opt-in per model (`batching:`) and only for
+	// embeddings: rows are per-text and order-independent, unlike pair/token
+	// classification outputs.
+	let batcher = match (&meta, cfg.batching.as_ref()) {
+		(Meta::Embedding { pooling, output, normalize, dimensions }, Some(settings)) => Some(crate::batcher::EmbedBatcher::new(
+			pool.clone(),
+			crate::batcher::EmbedMeta { pooling: *pooling, output: output.clone(), normalize: *normalize, dimensions: *dimensions },
+			*settings,
+		)),
+		_ => None,
+	};
 	Ok(Arc::new(LoadedModel {
 		cfg: cfg.clone(),
 		encoder,
-		pool: SessionPool::new(sessions, max_queue),
+		pool,
+		batcher,
 		meta,
 		source: resolved.source,
 		eps,

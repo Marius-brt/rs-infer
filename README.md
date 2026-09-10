@@ -82,8 +82,19 @@ models:
     hf: Xenova/multilingual-e5-small
     max_len: 512
     replicas: 2
-    eps: [coreml, cpu]
+    eps: [cpu]
+    dtype: fp32            # or int8/fp16: picks model_int8.onnx / model_fp16.onnx variants
+    batching:              # optional (embedding models only): cross-request dynamic batching
+      max_rows: 64         # max token rows packed per forward
+      max_tokens: 4096     # soft cap on real tokens per forward
+      queue_rows: 1024     # queue depth before 429
 ```
+
+**Batching:** rows from concurrent requests are spread over free session replicas
+and packed into larger forwards; a row arriving to an empty queue is dispatched
+immediately, so it never adds latency. On CPU it mostly helps many-small-request
+traffic (M5 Pro measurements: +12% docs/s at 1-doc requests, ~neutral at 16-doc
+requests; enable it where per-forward overhead is high, e.g. GPU).
 
 **CoreML caveat:** for small encoder models CoreML is often *slower* than CPU
 (ORT splits the graph into many CPU↔CoreML partitions, ~3x slower for
@@ -104,5 +115,6 @@ export and load-testing live in [`python/`](python/README.md).
 ## Known limitations
 
 - Encoder-only zero-shot only (no seq2seq BART-MNLI exports).
-- No dynamic continuous batching across requests; array inputs batch within one request.
+- Cross-request batching is embedding-only and opportunistic (no mid-forward insertion); rerank/zeroshot/pii batch within one request.
+- `dtype: int8` uses ORT dynamic quantization: activation scales are per-tensor, so results shift slightly with batch padding — benchmark quality before serving it.
 - No auth/TLS — put it behind a reverse proxy.

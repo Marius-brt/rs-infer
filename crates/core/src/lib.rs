@@ -4,6 +4,7 @@
 //! providers, and runs text pipelines: embeddings, reranking, zero-shot
 //! classification, and PII (token classification) detection.
 
+pub mod batcher;
 pub mod config;
 pub mod ep;
 pub mod error;

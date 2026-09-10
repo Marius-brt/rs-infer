@@ -39,6 +39,11 @@ impl SessionPool {
 		self.replicas
 	}
 
+	/// Sessions not currently checked out (idle or gathered-but-not-started).
+	pub fn available(&self) -> usize {
+		self.sem.available_permits()
+	}
+
 	pub async fn acquire(&self, timeout: Duration) -> Result<Pooled<'_>> {
 		if self.sem.available_permits() == 0 && self.waiting.load(Ordering::Relaxed) >= self.max_queue {
 			return Err(Error::Saturated);

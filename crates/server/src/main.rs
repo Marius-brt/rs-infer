@@ -165,6 +165,7 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
 	tracing::info!(bind = %config.server.bind, "resolving and loading configured models (first run downloads from the HF Hub)");
 	let started = std::time::Instant::now();
 	let registry = Arc::new(Registry::load(config.clone()).await?);
+	registry.start_batchers();
 	tracing::info!(
 		elapsed_ms = started.elapsed().as_millis(),
 		models = registry.infos().len(),
@@ -216,11 +217,17 @@ fn validate(config: &rsinfer_core::Config) -> anyhow::Result<()> {
 
 fn init_tracing() {
 	use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+	let explicit = std::env::var_os("RUST_LOG").is_some();
 	let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,ort=warn,tokenizers=warn,reqwest=warn,hf_hub=warn"));
-	// Startup/lifecycle logs from our own crates are always visible, even if RUST_LOG is set stricter.
-	let filter = ["rsinfer", "rsinfer_server", "rsinfer_core"].into_iter().fold(filter, |f, t| {
-		f.add_directive(format!("{t}=info").parse().expect("static directive parses"))
-	});
+	// Startup/lifecycle logs from our own crates are always visible, even if RUST_LOG is unset or looser.
+	// An explicit RUST_LOG is authoritative: never raise the floor over it.
+	let filter = if explicit {
+		filter
+	} else {
+		["rsinfer", "rsinfer_server", "rsinfer_core"].into_iter().fold(filter, |f, t| {
+			f.add_directive(format!("{t}=info").parse().expect("static directive parses"))
+		})
+	};
 	tracing_subscriber::registry()
 		.with(filter)
 		.with(tracing_subscriber::fmt::layer().with_target(false))
