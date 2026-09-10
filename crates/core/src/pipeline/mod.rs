@@ -5,7 +5,7 @@ pub mod pii;
 pub mod rerank;
 pub mod zeroshot;
 
-use ort::session::{Session, SessionOutputs};
+use ort::session::{OutputSelector, RunOptions, Session, SessionOutputs};
 
 use crate::model::OutSel;
 
@@ -21,7 +21,10 @@ pub(crate) fn run_forward(
 	sel: &OutSel,
 ) -> crate::Result<Fwd> {
 	let names: Vec<String> = session.outputs().iter().map(|o| o.name().to_string()).collect();
-	let outputs: SessionOutputs = session.run(inputs)?;
+	// Request only the selected output; decoder exports would otherwise
+	// materialize all KV-cache `present.*` outputs on every run.
+	let options = RunOptions::new()?.with_outputs(OutputSelector::no_default().with(sel.0.clone()));
+	let outputs: SessionOutputs = session.run_with_options(inputs, &options)?;
 	let value = outputs
 		.get(&sel.0)
 		.ok_or_else(|| crate::Error::Ort(ort::Error::new(format!("output '{}' not found; model has {names:?}", sel.0))))?;

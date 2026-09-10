@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use ort::{
-	session::{Session, SessionInputs},
-	value::Tensor,
+	session::{Session, SessionInputs, SessionInputValue},
+	value::{Outlet, Tensor, TensorElementType},
 };
 use tokenizers::{EncodeInput, Encoding, PaddingParams, Tokenizer, TruncationParams, TruncationDirection};
 
@@ -110,10 +110,18 @@ pub fn make_inputs(session: &Session, enc: &Encoded) -> Result<SessionInputs<'st
 	for input in session.inputs() {
 		let name = input.name();
 		pushed.push(name.to_string());
+		// Decoder-only exports (e.g. Qwen3-Embedding): a single-pass embedding
+		// forward runs with an empty KV cache.
+		if name.starts_with("past_key_values.") {
+			map.push((Cow::Owned(name.to_string()), empty_kv_cache(input, enc.batch)?));
+			continue;
+		}
 		let tensor = match name {
 			"input_ids" => Tensor::from_array((shape.clone(), std::mem::take(&mut flat_ids)))?,
 			"attention_mask" => Tensor::from_array((shape.clone(), enc.attention_mask.iter().flatten().copied().collect::<Vec<i64>>()))?,
 			"token_type_ids" => Tensor::from_array((shape.clone(), enc.token_type_ids.iter().flatten().copied().collect::<Vec<i64>>()))?,
+			// HF convention: position_ids = cumsum(attention_mask) - 1.
+			"position_ids" => Tensor::from_array((shape.clone(), position_ids(&enc.attention_mask)))?,
 			other => {
 				return Err(Error::Ort(ort::Error::new(format!(
 					"model requires unsupported input '{other}'; required inputs: {pushed:?}"
@@ -139,27 +147,79 @@ pub fn make_token_inputs(session: &Session, token_rows: &[Vec<u32>]) -> Result<S
 		v.resize(seq, 0);
 		ids.extend_from_slice(&v);
 	}
-	let masks: Vec<i64> = mask.flatten().collect();
 	let types = vec![0i64; ids.len()];
 	let shape = vec![token_rows.len() as i64, seq as i64];
 
 	let mut map: Vec<(Cow<'static, str>, ort::session::SessionInputValue<'static>)> = Vec::new();
 	let mut pushed = Vec::new();
+	let masks: Vec<Vec<i64>> = mask.collect();
+	let flat_masks: Vec<i64> = masks.iter().flatten().copied().collect();
 	for input in session.inputs() {
 		let name = input.name();
 		pushed.push(name.to_string());
-		let (data, fill): (Vec<i64>, i64) = match name {
-			"input_ids" => (ids.clone(), 0),
-			"attention_mask" => (masks.clone(), 0),
-			"token_type_ids" => (types.clone(), 0),
+		// Decoder-only exports (e.g. Qwen3-Embedding): a single-pass embedding
+		// forward runs with an empty KV cache.
+		if name.starts_with("past_key_values.") {
+			map.push((Cow::Owned(name.to_string()), empty_kv_cache(input, token_rows.len())?));
+			continue;
+		}
+		let data: Vec<i64> = match name {
+			"input_ids" => ids.clone(),
+			"attention_mask" => flat_masks.clone(),
+			"token_type_ids" => types.clone(),
+			// HF convention: position_ids = cumsum(attention_mask) - 1.
+			"position_ids" => position_ids(&masks),
 			other => {
 				return Err(Error::Ort(ort::Error::new(format!(
 					"model requires unsupported input '{other}'; required inputs: {pushed:?}"
 				))));
 			}
 		};
-		let _ = fill;
 		map.push((Cow::Owned(name.to_string()), Tensor::from_array((shape.clone(), data))?.into()));
 	}
 	Ok(SessionInputs::ValueMap(map))
+}
+
+/// HF convention: position_ids = cumsum(attention_mask) - 1 along the sequence dim.
+fn position_ids(mask: &[Vec<i64>]) -> Vec<i64> {
+	let mut out = Vec::new();
+	for row in mask {
+		let mut acc = 0i64;
+		for &m in row {
+			acc += m;
+			out.push(acc - 1);
+		}
+	}
+	out
+}
+
+/// Empty KV-cache tensor for a `past_key_values.N.{key,value}` input of a
+/// decoder-only export: shape [batch, num_kv_heads, 0, head_dim], derived from
+/// the declared input shape (dynamic dims are -1 in ORT).
+///
+/// The export's attention-mask graph only broadcasts correctly with an empty
+/// cache (past=0), so a single-pass embedding forward must pass a zero-length
+/// cache. Note: CoreML EP rejects zero-element tensors; such models require
+/// the CPU EP.
+fn empty_kv_cache(input: &Outlet, batch: usize) -> Result<SessionInputValue<'static>> {
+	let declared = input
+		.dtype()
+		.tensor_shape()
+		.ok_or_else(|| Error::Ort(ort::Error::new(format!("input '{}' is not a tensor", input.name()))))?;
+	let dims: Vec<i64> = declared.iter().copied().collect();
+	if dims.len() != 4 {
+		return Err(Error::Ort(ort::Error::new(format!(
+			"unexpected past_key_values shape for '{}': {dims:?}",
+			input.name()
+		))));
+	}
+	let shape = vec![batch as i64, dims[1], 0, dims[3]];
+	match input.dtype().tensor_type() {
+		Some(TensorElementType::Float32) => Ok(Tensor::from_array((shape, Vec::<f32>::new()))?.into()),
+		Some(other) => Err(Error::Ort(ort::Error::new(format!(
+			"unsupported KV-cache dtype {other:?} for '{}'",
+			input.name()
+		)))),
+		None => Err(Error::Ort(ort::Error::new(format!("input '{}' has no element type", input.name())))),
+	}
 }
