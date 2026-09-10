@@ -128,6 +128,9 @@ pub fn new_session(model_path: &std::path::Path, cfg: &ModelConfig) -> Result<Se
 		crate::config::OrtLogLevel::Error => LogLevel::Error,
 	};
 	builder = builder.with_log_level(log_level).map_err(|e| Error::Ort(e.into()))?;
+	if let Some(prefix) = &cfg.profiling_prefix {
+		builder = builder.with_profiling(prefix).map_err(|e| Error::Ort(e.into()))?;
+	}
 	if cfg.intra_threads > 0 {
 		builder = builder.with_intra_threads(cfg.intra_threads).map_err(|e| Error::Ort(e.into()))?;
 	}

@@ -38,7 +38,7 @@ pub async fn detect(model: &Arc<LoadedModel>, texts: Vec<String>, threshold: Opt
 	let (id2label, output) = (id2label.clone(), output.clone());
 	let threshold = threshold.unwrap_or(model.cfg.threshold).clamp(0.0, 1.0);
 
-	let enc = model.encoder.encode_texts(&texts)?;
+	let enc = model.encoder.encode_texts_offsets(&texts)?;
 	let token_count = enc.token_count();
 	let offsets = enc.offsets.clone();
 	let pooled = model.pool.acquire(queue_wait).await?;

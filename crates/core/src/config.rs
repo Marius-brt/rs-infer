@@ -97,6 +97,19 @@ pub enum CoreMlComputeUnits {
 	CpuOnly,
 }
 
+/// Preferred weight format when several graph files exist in the model dir/repo.
+/// `auto` = fp32 first (fallback fp16 > quantized); explicit values reorder the
+/// candidate list so e.g. a quantized export wins over the fp32 default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Dtype {
+	#[default]
+	Auto,
+	Fp32,
+	Fp16,
+	Int8,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -153,6 +166,9 @@ pub struct ModelConfig {
 	/// overrides the default model.onnx > fp16 > quantized preference.
 	#[serde(default)]
 	pub file: Option<String>,
+	/// Preferred graph variant (weight format); reorders the file candidates.
+	#[serde(default)]
+	pub dtype: Dtype,
 	/// HF repo to take `tokenizer.json` (and optionally `config.json`) from,
 	/// for model-only ONNX repos. Defaults to `hf` itself.
 	#[serde(default)]
@@ -210,6 +226,11 @@ pub struct ModelConfig {
 	pub trt_engine_cache: Option<PathBuf>,
 	#[serde(default)]
 	pub device_id: i32,
+
+	/// ORT profiling file prefix, set programmatically by the `profile` command;
+	/// not configurable from YAML.
+	#[serde(skip, default)]
+	pub profiling_prefix: Option<PathBuf>,
 }
 
 fn default_revision() -> String {
@@ -244,6 +265,7 @@ impl Default for ModelConfig {
 			revision: default_revision(),
 			subfolder: None,
 			file: None,
+			dtype: Dtype::Auto,
 			tokenizer_hf: None,
 			max_len: None,
 			replicas: default_replicas(),
@@ -262,6 +284,7 @@ impl Default for ModelConfig {
 			coreml_compute_units: CoreMlComputeUnits::All,
 			trt_engine_cache: None,
 			device_id: 0,
+			profiling_prefix: None,
 		}
 	}
 }

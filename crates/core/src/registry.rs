@@ -111,7 +111,9 @@ impl Registry {
 	}
 }
 
-fn load_model(cfg: &ModelConfig, hf_cache: Option<&std::path::Path>, max_queue: usize) -> Result<Arc<LoadedModel>> {
+/// Loads one model (download/resolve, tokenizer, session pool, metadata).
+/// Used by [`Registry::load`] and the server's `profile` command.
+pub fn load_model(cfg: &ModelConfig, hf_cache: Option<&std::path::Path>, max_queue: usize) -> Result<Arc<LoadedModel>> {
 	cfg.validate()?;
 	let t_start = std::time::Instant::now();
 	let rss_before = crate::memory::rss_mb().unwrap_or(0);

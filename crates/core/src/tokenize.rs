@@ -13,9 +13,9 @@ pub struct Encoded {
 	pub input_ids: Vec<Vec<i64>>,
 	pub attention_mask: Vec<Vec<i64>>,
 	pub token_type_ids: Vec<Vec<i64>>,
-	/// Character offsets per token ((0,0) for special/pad tokens).
+	/// Character offsets per token ((0,0) for special/pad tokens); only populated
+	/// by the `encode_*_offsets` variants (empty otherwise, to avoid the cost).
 	pub offsets: Vec<Vec<(usize, usize)>>,
-	pub tokens: Vec<Vec<String>>,
 	pub batch: usize,
 	pub seq: usize,
 }
@@ -33,6 +33,15 @@ pub struct Encoder {
 
 impl Encoder {
 	pub fn new(path: &std::path::Path, max_len: Option<usize>) -> Result<Self> {
+		// tokenizers' encode_batch fans out on rayon by default; that pool then
+		// oversubscribes against ORT's intra-op threads. Serialize it unless the
+		// operator explicitly configured TOKENIZERS_PARALLELISM.
+		static PAR_INIT: std::sync::Once = std::sync::Once::new();
+		PAR_INIT.call_once(|| {
+			if !tokenizers::parallelism::is_parallelism_configured() {
+				tokenizers::parallelism::set_parallelism(false);
+			}
+		});
 		let mut tokenizer = Tokenizer::from_file(path).map_err(|e| Error::Tokenize(format!("{}: {e}", path.display())))?;
 		tokenizer.with_padding(Some(PaddingParams::default()));
 		if let Some(max) = max_len {
@@ -54,13 +63,12 @@ impl Encoder {
 		enc.get_ids().first().copied()
 	}
 
-	fn from_encodings(encodings: Vec<Encoding>) -> Encoded {
+	fn from_encodings(encodings: Vec<Encoding>, with_offsets: bool) -> Encoded {
 		let mut e = Encoded {
 			input_ids: Vec::with_capacity(encodings.len()),
 			attention_mask: Vec::with_capacity(encodings.len()),
 			token_type_ids: Vec::with_capacity(encodings.len()),
-			offsets: Vec::with_capacity(encodings.len()),
-			tokens: Vec::with_capacity(encodings.len()),
+			offsets: Vec::new(),
 			batch: encodings.len(),
 			seq: encodings.first().map(|x| x.len()).unwrap_or(0),
 		};
@@ -68,8 +76,9 @@ impl Encoder {
 			e.input_ids.push(enc.get_ids().iter().map(|&i| i as i64).collect());
 			e.attention_mask.push(enc.get_attention_mask().iter().map(|&m| m as i64).collect());
 			e.token_type_ids.push(enc.get_type_ids().iter().map(|&t| t as i64).collect());
-			e.offsets.push(enc.get_offsets().to_vec());
-			e.tokens.push(enc.get_tokens().to_vec());
+			if with_offsets {
+				e.offsets.push(enc.get_offsets().to_vec());
+			}
 		}
 		e
 	}
@@ -78,9 +87,18 @@ impl Encoder {
 		let inputs: Vec<EncodeInput<'_>> = texts.iter().map(|t| EncodeInput::from(Cow::Borrowed(t.as_str()))).collect();
 		let encodings = self
 			.tokenizer
+			.encode_batch(inputs, true)
+			.map_err(|e| Error::Tokenize(e.to_string()))?;
+		Ok(Self::from_encodings(encodings, false))
+	}
+
+	pub fn encode_texts_offsets(&self, texts: &[String]) -> Result<Encoded> {
+		let inputs: Vec<EncodeInput<'_>> = texts.iter().map(|t| EncodeInput::from(Cow::Borrowed(t.as_str()))).collect();
+		let encodings = self
+			.tokenizer
 			.encode_batch_char_offsets(inputs, true)
 			.map_err(|e| Error::Tokenize(e.to_string()))?;
-		Ok(Self::from_encodings(encodings))
+		Ok(Self::from_encodings(encodings, true))
 	}
 
 	pub fn encode_pairs(&self, pairs: &[(String, String)]) -> Result<Encoded> {
@@ -90,9 +108,21 @@ impl Encoder {
 			.collect();
 		let encodings = self
 			.tokenizer
+			.encode_batch(inputs, true)
+			.map_err(|e| Error::Tokenize(e.to_string()))?;
+		Ok(Self::from_encodings(encodings, false))
+	}
+
+	pub fn encode_pairs_offsets(&self, pairs: &[(String, String)]) -> Result<Encoded> {
+		let inputs: Vec<EncodeInput<'_>> = pairs
+			.iter()
+			.map(|(a, b)| EncodeInput::Dual(Cow::Borrowed(a.as_str()).into(), Cow::Borrowed(b.as_str()).into()))
+			.collect();
+		let encodings = self
+			.tokenizer
 			.encode_batch_char_offsets(inputs, true)
 			.map_err(|e| Error::Tokenize(e.to_string()))?;
-		Ok(Self::from_encodings(encodings))
+		Ok(Self::from_encodings(encodings, true))
 	}
 }
 

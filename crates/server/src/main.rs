@@ -2,6 +2,7 @@ mod api;
 mod dto;
 mod error;
 mod metrics;
+mod profile;
 mod state;
 
 use std::{path::{Path, PathBuf}, sync::Arc};
@@ -46,7 +47,13 @@ enum Command {
 		/// HF repo to take tokenizer.json / config.json from, for model-only ONNX repos.
 		#[arg(long)]
 		tokenizer_hf: Option<String>,
+		/// Preferred weight format to look for in the repo: fp32 | fp16 | int8.
+		#[arg(long)]
+		dtype: Option<String>,
 	},
+	/// Micro-benchmark one configured model offline: synthetic batches through the real
+	/// pipeline (session pool -> forward -> pooling), with optional ORT op-level profiling.
+	Profile(profile::ProfileArgs),
 }
 
 #[tokio::main]
@@ -54,14 +61,26 @@ async fn main() -> anyhow::Result<()> {
 	init_tracing();
 	let args = Args::parse();
 	match args.command {
-		Some(Command::Download { repo, out, revision, file, subfolder, tokenizer_hf }) => {
-			download(repo, out, revision, file, subfolder, tokenizer_hf).await
+		Some(Command::Download { repo, out, revision, file, subfolder, tokenizer_hf, dtype }) => {
+			download(repo, out, revision, file, subfolder, tokenizer_hf, dtype).await
 		}
+		Some(Command::Profile(profile_args)) => profile::run(profile_args).await,
 		None => serve(args.config).await,
 	}
 }
 
-async fn download(repo: String, out: PathBuf, revision: String, file: Option<String>, subfolder: Option<String>, tokenizer_hf: Option<String>) -> anyhow::Result<()> {
+fn parse_dtype(s: &str) -> anyhow::Result<rsinfer_core::config::Dtype> {
+	use rsinfer_core::config::Dtype;
+	match s.to_ascii_lowercase().as_str() {
+		"auto" => Ok(Dtype::Auto),
+		"fp32" | "f32" => Ok(Dtype::Fp32),
+		"fp16" | "f16" | "half" => Ok(Dtype::Fp16),
+		"int8" | "q8" => Ok(Dtype::Int8),
+		other => anyhow::bail!("unknown --dtype '{other}' (auto|fp32|fp16|int8)"),
+	}
+}
+
+async fn download(repo: String, out: PathBuf, revision: String, file: Option<String>, subfolder: Option<String>, tokenizer_hf: Option<String>, dtype: Option<String>) -> anyhow::Result<()> {
 	let cfg = rsinfer_core::ModelConfig {
 		name: repo.clone(),
 		hf: Some(repo.clone()),
@@ -69,6 +88,7 @@ async fn download(repo: String, out: PathBuf, revision: String, file: Option<Str
 		subfolder,
 		file,
 		tokenizer_hf,
+		dtype: dtype.as_deref().map(parse_dtype).transpose()?.unwrap_or_default(),
 		..Default::default()
 	};
 	let target = out.clone();

@@ -24,6 +24,9 @@ const MODEL_CANDIDATES: &[&str] = &[
 	"model_int8.onnx",
 	"model_uint8.onnx",
 ];
+const FP32_CANDIDATES: &[&str] = &["model.onnx"];
+const FP16_CANDIDATES: &[&str] = &["model_fp16.onnx", "model.onnx"];
+const INT8_CANDIDATES: &[&str] = &["model_int8.onnx", "model_int8_static.onnx", "model_quantized.onnx", "model.onnx"];
 const POOLING_CANDIDATES: &[&str] = &["1_Pooling/config.json"];
 
 pub fn resolve(cfg: &ModelConfig, cache_dir: Option<&Path>) -> Result<Resolved> {
@@ -83,7 +86,18 @@ fn candidates_for<'a>(cfg: &'a ModelConfig, defaults: &'a [&'a str]) -> Vec<&'a 
 	if let Some(f) = cfg.file.as_deref() {
 		v.push(f);
 	}
-	v.extend_from_slice(defaults);
+	let ordered: &[&str] = match cfg.dtype {
+		crate::config::Dtype::Auto => defaults,
+		crate::config::Dtype::Fp32 => FP32_CANDIDATES,
+		crate::config::Dtype::Fp16 => FP16_CANDIDATES,
+		crate::config::Dtype::Int8 => INT8_CANDIDATES,
+	};
+	v.extend_from_slice(ordered);
+	for d in defaults {
+		if !ordered.contains(d) {
+			v.push(d);
+		}
+	}
 	v
 }
 

@@ -91,16 +91,17 @@ async def worker(client: httpx.AsyncClient, path: str, body: dict, lat: list, er
 
 async def run(args: argparse.Namespace) -> None:
     rng = random.Random(args.seed)
-    limits = httpx.Limits(max_connections=args.concurrency * 2, max_keepalive_connections=args.concurrency * 2)
+    limits = httpx.Limits(max_connections=args.concurrency * 2,
+                          max_keepalive_connections=args.concurrency * 2)
     async with httpx.AsyncClient(base_url=args.url, timeout=args.timeout, limits=limits) as client:
         try:
-            models = (await client.get("/v1/models")).json()["data"]
-            kinds = {m["id"]: m["kind"] for m in models}
-            if args.model and args.model not in kinds:
-                sys.exit(f"model '{args.model}' not on server; available: {sorted(kinds)}")
-            if not args.model and models:
-                args.model = models[0]["id"]
-            print(f"server models: {kinds}\nbenchmarking {args.endpoint} with model={args.model}")
+            """   models = (await client.get("/v1/models")).json()["data"]
+              kinds = {m["id"]: m["kind"] for m in models}
+              if args.model and args.model not in kinds:
+                  sys.exit(f"model '{args.model}' not on server; available: {sorted(kinds)}")
+              if not args.model and models:
+                  args.model = models[0]["id"]
+              print(f"server models: {kinds}\nbenchmarking {args.endpoint} with model={args.model}") """
         except (httpx.HTTPError, KeyError) as exc:
             sys.exit(f"cannot reach server at {args.url}: {exc}")
 
@@ -140,7 +141,7 @@ async def run(args: argparse.Namespace) -> None:
         print("\n".join(errors[:5]))
         sys.exit("all requests failed")
     lat_s = sorted(lat)
-    pct = lambda p: lat_s[min(len(lat_s) - 1, int(p / 100 * len(lat_s)))] * 1000  # noqa: E731
+    def pct(p): return lat_s[min(len(lat_s) - 1, int(p / 100 * len(lat_s)))] * 1000  # noqa: E731
     reqs_ok = len(lat)
     docs = reqs_ok * args.batch
     print(f"""
@@ -164,19 +165,25 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--url", default="http://127.0.0.1:8080")
     p.add_argument("--endpoint", default="embeddings",
                    choices=["embeddings", "embed-tei", "rerank", "score", "pii-detect", "pii-redact", "classify", "true-false"])
-    p.add_argument("--model", default=None, help="model name (default: first on server)")
-    p.add_argument("--batch", type=int, default=8, help="inputs (docs/texts) per request")
-    p.add_argument("--len", type=int, default=40, help="words per generated text")
-    p.add_argument("--concurrency", type=int, default=4, help="parallel in-flight requests")
+    p.add_argument("--model", default=None,
+                   help="model name (default: first on server)")
+    p.add_argument("--batch", type=int, default=8,
+                   help="inputs (docs/texts) per request")
+    p.add_argument("--len", type=int, default=40,
+                   help="words per generated text")
+    p.add_argument("--concurrency", type=int, default=4,
+                   help="parallel in-flight requests")
     p.add_argument("--total", type=int, default=100, help="total requests")
     p.add_argument("--warmup", type=int, default=5)
     p.add_argument("--timeout", type=float, default=120.0)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--json", help="write a machine-readable summary to this path")
+    p.add_argument(
+        "--json", help="write a machine-readable summary to this path")
     return p.parse_args()
 
 
