@@ -7,7 +7,7 @@ use rsinfer_core::{
 
 use super::usage;
 use crate::{
-	dto::{EmbeddingItem, EmbeddingsRequest, EmbeddingsResponse},
+	dto::{EmbeddingData, EmbeddingItem, EmbeddingsRequest, EmbeddingsResponse},
 	error::ApiError,
 	state::AppState,
 };
@@ -20,7 +20,7 @@ pub async fn embeddings(State(state): State<AppState>, Json(req): Json<Embedding
 		return Err(ApiError(rsinfer_core::Error::BadRequest("`input` is empty".into())));
 	}
 
-	let (vectors, tokens) = if texts.is_empty() {
+	let (mut vectors, tokens) = if texts.is_empty() {
 		let out = embedding::embed_tokens(&model, token_rows, state.queue_wait).await?;
 		(out.vectors, out.tokens)
 	} else {
@@ -28,25 +28,29 @@ pub async fn embeddings(State(state): State<AppState>, Json(req): Json<Embedding
 		(out.vectors, out.tokens)
 	};
 
-	let base64_mode = req.encoding_format.as_deref() == Some("base64");
-	let mut data = Vec::with_capacity(vectors.len());
-	for (index, mut vec) in vectors.into_iter().enumerate() {
-		if let Some(d) = req.dimensions {
+	if let Some(d) = req.dimensions {
+		for vec in &mut vectors {
 			if d < vec.len() {
 				vec.truncate(d);
-				l2_normalize(&mut vec);
+				l2_normalize(vec);
 			}
 		}
-		let embedding = if base64_mode {
+	}
+	let base64_mode = req.encoding_format.as_deref() == Some("base64");
+	let mut data = Vec::with_capacity(vectors.len());
+	let embedding_iter = vectors.into_iter().enumerate();
+	if base64_mode {
+		for (index, vec) in embedding_iter {
 			let mut bytes = Vec::with_capacity(vec.len() * 4);
 			for f in &vec {
 				bytes.extend_from_slice(&f.to_le_bytes());
 			}
-			serde_json::Value::String(STANDARD.encode(bytes))
-		} else {
-			serde_json::to_value(&vec).unwrap_or_default()
-		};
-		data.push(EmbeddingItem { object: "embedding", index, embedding });
+			data.push(EmbeddingItem { object: "embedding", index, embedding: EmbeddingData::Base64(STANDARD.encode(bytes)) });
+		}
+	} else {
+		for (index, vec) in embedding_iter {
+			data.push(EmbeddingItem { object: "embedding", index, embedding: EmbeddingData::Floats(vec) });
+		}
 	}
 	Ok(Json(EmbeddingsResponse {
 		object: "list",

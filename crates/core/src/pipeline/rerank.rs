@@ -3,7 +3,8 @@ use std::{sync::Arc, time::Duration};
 use crate::{
 	config::Scoring,
 	model::Meta,
-	pipeline::{embedding::forward, softmax, Fwd},
+	pipeline::{blocking, run_forward, softmax, Fwd},
+	tokenize::make_inputs,
 	Error, LoadedModel, Result,
 };
 
@@ -34,15 +35,16 @@ pub async fn score_text_pairs(model: &Arc<LoadedModel>, pairs: Vec<(String, Stri
 	};
 	let (scoring, yes_id, no_id, output) = (*scoring, *yes_id, *no_id, output.clone());
 
-	let enc = model.encoder.encode_pairs(&pairs)?;
+	let m = Arc::clone(model);
+	let enc = blocking(move || m.encoder.encode_pairs(&pairs)).await??;
 	let token_count = enc.token_count();
 	let attn = enc.attention_mask.clone();
 
 	let pooled = model.pool.acquire(queue_wait).await?;
 	let scores = pooled
 		.run_blocking(move |session| -> Result<Vec<f64>> {
-			let fwd = forward(session, &enc, &output)?;
-			apply_scoring(&fwd, scoring, yes_id, no_id, &attn)
+			let inputs = make_inputs(session, &enc)?;
+			run_forward(session, inputs, &output, |fwd| apply_scoring(&fwd, scoring, yes_id, no_id, &attn))
 		})
 		.await?;
 
@@ -52,7 +54,7 @@ pub async fn score_text_pairs(model: &Arc<LoadedModel>, pairs: Vec<(String, Stri
 	})
 }
 
-fn apply_scoring(fwd: &Fwd, mut scoring: Scoring, yes_id: Option<u32>, no_id: Option<u32>, attn: &[Vec<i64>]) -> Result<Vec<f64>> {
+fn apply_scoring(fwd: &Fwd<'_>, mut scoring: Scoring, yes_id: Option<u32>, no_id: Option<u32>, attn: &[Vec<i64>]) -> Result<Vec<f64>> {
 	match fwd.shape.as_slice() {
 		[b, 1] => {
 			// Default maps the single logit through sigmoid -> relevance_score in (0,1),

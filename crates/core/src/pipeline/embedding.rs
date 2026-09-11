@@ -2,9 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
 	config::Pooling,
-	model::{Meta, OutSel},
-	pipeline::{run_forward, Fwd},
-	tokenize::{make_inputs, Encoded},
+	model::Meta,
+	pipeline::{blocking, run_forward, Fwd},
+	tokenize::make_inputs,
 	Error, LoadedModel, Result,
 };
 
@@ -26,22 +26,24 @@ pub async fn embed(model: &Arc<LoadedModel>, texts: Vec<String>, queue_wait: Dur
 	let (pooling, output, normalize, dimensions) = (*pooling, output.clone(), *normalize, *dimensions);
 
 	if let Some(batcher) = &model.batcher {
-		let rows = model.encoder.encode_rows(&texts)?;
+		let m = Arc::clone(model);
+		let rows = blocking(move || m.encoder.encode_rows(&texts)).await??;
 		let token_count = rows.iter().map(|r| r.len()).sum();
 		let vectors = batcher.submit(rows, queue_wait).await?;
 		tracing::trace!(model = model.name(), rows = vectors.len(), tokens = token_count, "embedding done (batched)");
 		return Ok(EmbedOutput { vectors, tokens: token_count });
 	}
 
-	let enc = model.encoder.encode_texts(&texts)?;
+	let m = Arc::clone(model);
+	let enc = blocking(move || m.encoder.encode_texts(&texts)).await??;
 	let token_count = enc.token_count();
 	let attn = enc.attention_mask.clone();
 
 	let pooled = model.pool.acquire(queue_wait).await?;
 	let vectors = pooled
 		.run_blocking(move |session| -> Result<Vec<Vec<f32>>> {
-			let fwd = forward(session, &enc, &output)?;
-			pool_rows(&fwd, pooling, &attn)
+			let inputs = make_inputs(session, &enc)?;
+			run_forward(session, inputs, &output, |fwd| pool_rows(&fwd, pooling, &attn))
 		})
 		.await?;
 
@@ -86,9 +88,8 @@ pub async fn embed_tokens(model: &Arc<LoadedModel>, rows: Vec<Vec<u32>>, queue_w
 	let vectors = pooled
 		.run_blocking(move |session| -> Result<Vec<Vec<f32>>> {
 			let inputs = crate::tokenize::make_token_inputs(session, &rows)?;
-			let fwd = run_forward(session, inputs, &output)?;
 			let attn: Vec<Vec<i64>> = rows.iter().map(|r| r.iter().map(|_| 1i64).collect()).collect();
-			pool_rows(&fwd, pooling, &attn)
+			run_forward(session, inputs, &output, |fwd| pool_rows(&fwd, pooling, &attn))
 		})
 		.await?;
 
@@ -107,13 +108,8 @@ pub async fn embed_tokens(model: &Arc<LoadedModel>, rows: Vec<Vec<u32>>, queue_w
 	Ok(EmbedOutput { vectors: out, tokens })
 }
 
-pub(crate) fn forward(session: &mut ort::session::Session, enc: &Encoded, output: &OutSel) -> Result<Fwd> {
-	let inputs = make_inputs(session, enc)?;
-	run_forward(session, inputs, output)
-}
-
 /// Convert a rank-3 tensor [B,T,D] (or rank-2 [B,D]) into [B,D] rows.
-pub(crate) fn pool_rows(fwd: &Fwd, pooling: Pooling, attn: &[Vec<i64>]) -> Result<Vec<Vec<f32>>> {
+pub(crate) fn pool_rows(fwd: &Fwd<'_>, pooling: Pooling, attn: &[Vec<i64>]) -> Result<Vec<Vec<f32>>> {
 	match fwd.shape.as_slice() {
 		[b, d] => Ok((0..*b).map(|i| fwd.data[i * d..(i + 1) * d].to_vec()).collect()),
 		[b, t, d] => {

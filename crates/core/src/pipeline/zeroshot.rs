@@ -2,7 +2,8 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
 	model::Meta,
-	pipeline::{embedding::forward, softmax, Fwd},
+	pipeline::{blocking, run_forward, softmax, Fwd},
+	tokenize::make_inputs,
 	Error, LoadedModel, Result,
 };
 
@@ -45,14 +46,16 @@ pub async fn classify(model: &Arc<LoadedModel>, texts: Vec<String>, candidates: 
 		}
 	}
 
-	let enc = model.encoder.encode_pairs(&pairs)?;
+	let m = Arc::clone(model);
+	let enc = blocking(move || m.encoder.encode_pairs(&pairs)).await??;
 	let token_count = enc.token_count();
 	let pooled = model.pool.acquire(queue_wait).await?;
-	let fwd = pooled
-		.run_blocking(move |session| -> Result<Fwd> { forward(session, &enc, &output) })
+	let per_class = pooled
+		.run_blocking(move |session| -> Result<Vec<f64>> {
+			let inputs = make_inputs(session, &enc)?;
+			run_forward(session, inputs, &output, |fwd| entailment_logits(&fwd, entailment, contradiction))
+		})
 		.await?;
-
-	let per_class: Vec<f64> = entailment_logits(&fwd, entailment, contradiction)?;
 
 	let mut outcomes = Vec::with_capacity(texts.len());
 	for text_idx in 0..texts.len() {
@@ -73,14 +76,14 @@ pub async fn classify(model: &Arc<LoadedModel>, texts: Vec<String>, candidates: 
 }
 
 /// entailment-minus-contradiction logit per pair row, from sequence-classification [B,K].
-fn entailment_logits(fwd: &Fwd, entailment: usize, contradiction: usize) -> Result<Vec<f64>> {
+fn entailment_logits(fwd: &Fwd<'_>, entailment: usize, contradiction: usize) -> Result<Vec<f64>> {
 	match fwd.shape.as_slice() {
 		[b, k] => {
 			if entailment >= *k || contradiction >= *k {
 				return Err(Error::Config(format!("label ids ent={entailment}/con={contradiction} outside output dim {k}")));
 			}
 			Ok((0..*b)
-				.map(|i| (row_of(&fwd.data, i, *k)[entailment] - row_of(&fwd.data, i, *k)[contradiction]) as f64)
+				.map(|i| (row_of(fwd.data, i, *k)[entailment] - row_of(fwd.data, i, *k)[contradiction]) as f64)
 				.collect())
 		}
 		other => Err(Error::BadOutputShape(other.to_vec())),
@@ -160,14 +163,16 @@ pub async fn classify_true_false(model: &Arc<LoadedModel>, inputs: Vec<String>, 
 		pairs.push((input.clone(), assertion.clone()));
 	}
 
-	let enc = model.encoder.encode_pairs(&pairs)?;
+	let m = Arc::clone(model);
+	let enc = blocking(move || m.encoder.encode_pairs(&pairs)).await??;
 	let token_count = enc.token_count();
 	let pooled = model.pool.acquire(queue_wait).await?;
-	let fwd = pooled
-		.run_blocking(move |session| -> Result<Fwd> { forward(session, &enc, &output) })
+	let probabilities = pooled
+		.run_blocking(move |session| -> Result<Vec<f64>> {
+			let inputs = make_inputs(session, &enc)?;
+			run_forward(session, inputs, &output, |fwd| entailment_probs(&fwd, entailment, contradiction))
+		})
 		.await?;
-
-	let probabilities = entailment_probs(&fwd, entailment, contradiction)?;
 	let assertions = vec![assertion; inputs.len()];
 	Ok(TrueFalseOutput { probabilities, assertions, tokens: token_count })
 }
@@ -175,7 +180,7 @@ pub async fn classify_true_false(model: &Arc<LoadedModel>, inputs: Vec<String>, 
 /// P(entailment) per row, contrasting only entailment vs contradiction (the
 /// neutral class is ignored: MNLI models put most mass there for unrelated
 /// pairs, which would swamp the entailment signal in a full-row softmax).
-fn entailment_probs(fwd: &Fwd, entailment: usize, contradiction: usize) -> Result<Vec<f64>> {
+fn entailment_probs(fwd: &Fwd<'_>, entailment: usize, contradiction: usize) -> Result<Vec<f64>> {
 	match fwd.shape.as_slice() {
 		[b, k] => {
 			if entailment >= *k || contradiction >= *k {
@@ -183,7 +188,7 @@ fn entailment_probs(fwd: &Fwd, entailment: usize, contradiction: usize) -> Resul
 			}
 			Ok((0..*b)
 				.map(|i| {
-					let row = row_of(&fwd.data, i, *k);
+					let row = row_of(fwd.data, i, *k);
 					softmax(&[row[contradiction], row[entailment]])[1]
 				})
 				.collect())

@@ -9,30 +9,36 @@ use ort::session::{OutputSelector, RunOptions, Session, SessionOutputs};
 
 use crate::model::OutSel;
 
-pub(crate) struct Fwd {
+pub(crate) struct Fwd<'a> {
 	pub shape: Vec<usize>,
-	pub data: Vec<f32>,
+	pub data: &'a [f32],
 }
 
-/// Runs a forward pass on a pooled session and extracts the selected output as f32.
-pub(crate) fn run_forward(
+/// Runs a CPU-bound closure (tokenization) on the blocking pool so async runtime
+/// workers stay free for request handling.
+pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> crate::Result<T> {
+	tokio::task::spawn_blocking(f).await.map_err(|e| crate::Error::Config(format!("blocking task panicked: {e}")))
+}
+
+/// Runs a forward pass and hands the selected output to `f` as a borrowed view
+/// (shape + contiguous f32 slice) — no copy of the full activation tensor.
+/// Decoder exports would otherwise materialize all KV-cache `present.*` outputs.
+pub(crate) fn run_forward<R>(
 	session: &mut Session,
 	inputs: ort::session::SessionInputs<'static, 'static>,
 	sel: &OutSel,
-) -> crate::Result<Fwd> {
+	f: impl FnOnce(Fwd<'_>) -> crate::Result<R>,
+) -> crate::Result<R> {
 	let names: Vec<String> = session.outputs().iter().map(|o| o.name().to_string()).collect();
-	// Request only the selected output; decoder exports would otherwise
-	// materialize all KV-cache `present.*` outputs on every run.
 	let options = RunOptions::new()?.with_outputs(OutputSelector::no_default().with(sel.0.clone()));
 	let outputs: SessionOutputs = session.run_with_options(inputs, &options)?;
 	let value = outputs
 		.get(&sel.0)
 		.ok_or_else(|| crate::Error::Ort(ort::Error::new(format!("output '{}' not found; model has {names:?}", sel.0))))?;
-	let view = value.try_extract_array::<f32>()?;
-	let owned = view.to_owned();
-	Ok(Fwd {
-		shape: owned.shape().to_vec(),
-		data: owned.into_raw_vec_and_offset().0,
+	let (shape, data) = value.try_extract_tensor::<f32>()?;
+	f(Fwd {
+		shape: shape.iter().map(|&d| d as usize).collect(),
+		data,
 	})
 }
 

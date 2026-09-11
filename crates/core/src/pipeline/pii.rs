@@ -4,7 +4,8 @@ use serde::Serialize;
 
 use crate::{
 	model::Meta,
-	pipeline::{embedding::forward, Fwd},
+	pipeline::{blocking, run_forward, Fwd},
+	tokenize::make_inputs,
 	Error, LoadedModel, Result,
 };
 
@@ -38,15 +39,18 @@ pub async fn detect(model: &Arc<LoadedModel>, texts: Vec<String>, threshold: Opt
 	let (id2label, output) = (id2label.clone(), output.clone());
 	let threshold = threshold.unwrap_or(model.cfg.threshold).clamp(0.0, 1.0);
 
-	let enc = model.encoder.encode_texts_offsets(&texts)?;
+	let m = Arc::clone(model);
+	let (enc, texts) = blocking(move || m.encoder.encode_texts_offsets(&texts).map(|enc| (enc, texts))).await??;
 	let token_count = enc.token_count();
 	let offsets = enc.offsets.clone();
 	let pooled = model.pool.acquire(queue_wait).await?;
-	let fwd = pooled
-		.run_blocking(move |session| -> Result<Fwd> { forward(session, &enc, &output) })
+	let n_labels = id2label.len();
+	let per_token = pooled
+		.run_blocking(move |session| -> Result<Vec<Vec<(usize, f64)>>> {
+			let inputs = make_inputs(session, &enc)?;
+			run_forward(session, inputs, &output, |fwd| argmax_probs(&fwd, n_labels))
+		})
 		.await?;
-
-	let per_token: Vec<Vec<(usize, f64)>> = argmax_probs(&fwd, id2label.len())?;
 	let mut results = Vec::with_capacity(texts.len());
 	for (row, (text, token_offsets)) in per_token.iter().zip(texts.iter().zip(offsets.iter())) {
 		results.push(decode_entities(text, row, token_offsets, &id2label, threshold));
@@ -55,7 +59,7 @@ pub async fn detect(model: &Arc<LoadedModel>, texts: Vec<String>, threshold: Opt
 }
 
 /// Per token: (predicted label id, softmax probability of that label).
-fn argmax_probs(fwd: &Fwd, num_labels: usize) -> Result<Vec<Vec<(usize, f64)>>> {
+fn argmax_probs(fwd: &Fwd<'_>, num_labels: usize) -> Result<Vec<Vec<(usize, f64)>>> {
 	match fwd.shape.as_slice() {
 		[b, s, c] => {
 			let n = *c;

@@ -13,6 +13,10 @@ use crate::{
 	Error, Result,
 };
 
+fn available_parallelism() -> usize {
+	std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
 /// All EPs known to the runtime, with compile-time availability.
 pub const ALL_EPS: &[EpName] = &[EpName::Cpu, EpName::Coreml, EpName::Cuda, EpName::Tensorrt, EpName::Nvrtx];
 
@@ -131,9 +135,14 @@ pub fn new_session(model_path: &std::path::Path, cfg: &ModelConfig) -> Result<Se
 	if let Some(prefix) = &cfg.profiling_prefix {
 		builder = builder.with_profiling(prefix).map_err(|e| Error::Ort(e.into()))?;
 	}
-	if cfg.intra_threads > 0 {
-		builder = builder.with_intra_threads(cfg.intra_threads).map_err(|e| Error::Ort(e.into()))?;
-	}
+	// intra_threads=0: give every replica a full-size pool (all logical cores).
+	// M5 Pro A/B (Qwen3-0.6B, embeddings, c8): 4 replicas x 14 threads beat
+	// 4x3 / 4x7 / 2x7 / 1x14 on both throughput and p50 — these GEMMs are
+	// memory-latency bound, so ORT pools overlap stalls better when each
+	// replica can spin up all cores. Set `intra_threads` to pin per-replica
+	// thread counts (e.g. on NUMA servers), where splitting is preferable.
+	let intra = if cfg.intra_threads > 0 { cfg.intra_threads } else { available_parallelism() };
+	builder = builder.with_intra_threads(intra).map_err(|e| Error::Ort(e.into()))?;
 	if !dispatches.is_empty() {
 		builder = builder.with_execution_providers(dispatches).map_err(|e| Error::Ort(e.into()))?;
 	}

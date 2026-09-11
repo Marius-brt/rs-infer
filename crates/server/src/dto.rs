@@ -35,7 +35,16 @@ pub struct EmbeddingsRequest {
 pub struct EmbeddingItem {
 	pub object: &'static str,
 	pub index: usize,
-	pub embedding: serde_json::Value,
+	/// Owned float vec / pre-encoded base64: the derive serializes f32 slices
+	/// in a single streaming pass (no intermediate serde_json::Value tree).
+	pub embedding: EmbeddingData,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum EmbeddingData {
+	Floats(Vec<f32>),
+	Base64(String),
 }
 
 #[derive(Debug, Serialize)]

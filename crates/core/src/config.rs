@@ -202,7 +202,8 @@ pub struct ModelConfig {
 	/// Number of concurrent sessions (pool replicas) for this model.
 	#[serde(default = "default_replicas")]
 	pub replicas: usize,
-	/// intra-op threads per session; 0 = ORT default.
+	/// intra-op threads per session; 0 = all logical cores per replica (measured
+	/// fastest on M5 Pro with multi-replica; set e.g. cores/replicas on NUMA hosts).
 	#[serde(default)]
 	pub intra_threads: usize,
 	/// Execution provider priority list; entries not compiled in are skipped with a warning.

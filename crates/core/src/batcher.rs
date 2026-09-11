@@ -116,27 +116,39 @@ async fn await_reply(reply: oneshot::Receiver<Result<Vec<f32>>>) -> Result<Vec<f
 async fn gatherer(batcher: Arc<EmbedBatcher>, mut queue_rx: mpsc::Receiver<Unit>) {
 	let s = batcher.settings;
 	while let Some(first) = queue_rx.recv().await {
-		let mut units = vec![first];
-		let mut tokens = units[0].ids.len();
-		// Fair share: spread the current backlog over the sessions that can start
-		// right now, so no replica idles while rows wait. A lone arrival becomes
-		// share=1 and is dispatched with zero added latency. Waiting on an empty
-		// queue is never useful here: rows that do not exist yet cannot be
-		// predicted, and the per-forward fixed cost is tiny compared with a
-		// parked batch's tail latency.
+		// Drain the current backlog (no waiting: rows that don't exist yet
+		// can't be predicted), up to what the free sessions can run at once.
 		let idle = batcher.pool.available().max(1);
-		let share = (queue_rx.len() + 1).div_ceil(idle).clamp(1, s.max_rows);
-		while units.len() < share && tokens < s.max_tokens {
+		let staged_cap = s.max_rows.saturating_mul(idle);
+		let mut staged = vec![first];
+		while staged.len() < staged_cap {
 			match queue_rx.try_recv() {
-				Ok(u) => {
-					tokens += u.ids.len();
-					units.push(u);
-				}
+				Ok(u) => staged.push(u),
 				Err(_) => break,
 			}
 		}
-		if batcher.batch_tx.send(units).await.is_err() {
-			return;
+		// Length bucketing: rows sorted by token count group similar lengths per
+		// batch, so batch padding (to the batch max) is minimized.
+		staged.sort_by_key(|u| u.ids.len());
+		let share = staged.len().div_ceil(idle).clamp(1, s.max_rows);
+		let mut chunks: Vec<Vec<Unit>> = Vec::with_capacity(idle);
+		let mut cur: Vec<Unit> = Vec::new();
+		let mut cur_tokens = 0usize;
+		for u in staged {
+			if (cur.len() >= share || cur_tokens + u.ids.len() > s.max_tokens) && !cur.is_empty() {
+				cur_tokens = 0;
+				chunks.push(std::mem::take(&mut cur));
+			}
+			cur_tokens += u.ids.len();
+			cur.push(u);
+		}
+		if !cur.is_empty() {
+			chunks.push(cur);
+		}
+		for chunk in chunks {
+			if batcher.batch_tx.send(chunk).await.is_err() {
+				return;
+			}
 		}
 	}
 }
@@ -166,7 +178,6 @@ async fn run_batch(batcher: &Arc<EmbedBatcher>, units: Vec<Unit>) {
 			pooled
 				.run_blocking(move |session| -> Result<Vec<Vec<f32>>> {
 					let inputs = make_token_inputs(session, &rows)?;
-					let fwd = run_forward(session, inputs, &meta.output)?;
 					let seq = rows.iter().map(|r| r.len()).max().unwrap_or(0);
 					let attn: Vec<Vec<i64>> = rows
 						.iter()
@@ -176,7 +187,7 @@ async fn run_batch(batcher: &Arc<EmbedBatcher>, units: Vec<Unit>) {
 							v
 						})
 						.collect();
-					let mut out = pool_rows(&fwd, meta.pooling, &attn)?;
+					let mut out = run_forward(session, inputs, &meta.output, |fwd| pool_rows(&fwd, meta.pooling, &attn))?;
 					for vec in &mut out {
 						if let Some(d) = meta.dimensions {
 							if d < vec.len() {
