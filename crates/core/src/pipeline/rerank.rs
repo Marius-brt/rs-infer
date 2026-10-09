@@ -1,10 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
+use ort::session::Session;
+
 use crate::{
 	config::Scoring,
-	model::Meta,
-	pipeline::{blocking, run_forward, softmax, Fwd},
-	tokenize::make_inputs,
+	model::{Meta, OutSel},
+	pipeline::{blocking, forward, run_rows, softmax, warn_truncated, Extract, Fwd, RowOut},
+	tokenize::Encoded,
 	Error, LoadedModel, Result,
 };
 
@@ -20,37 +22,75 @@ pub struct RerankOutcome {
 }
 
 /// Cross-encoder scoring of (query, document) pairs, in input order.
-pub async fn score_pairs(model: &Arc<LoadedModel>, query: String, documents: Vec<String>, queue_wait: Duration) -> Result<RerankOutcome> {
-	let pairs: Vec<(String, String)> = documents.into_iter().map(|d| (query.clone(), d)).collect();
-	score_text_pairs(model, pairs, queue_wait).await
+///
+/// With `max_chunks_per_doc`, a document too long for the model window is split
+/// into chunks that each fit next to the query (at most that many, from the
+/// start) and scores as its best chunk (Cohere semantics). Otherwise long
+/// documents are truncated.
+pub async fn score_pairs(model: &Arc<LoadedModel>, query: String, documents: Vec<String>, max_chunks_per_doc: Option<usize>, queue_wait: Duration) -> Result<RerankOutcome> {
+	let Some(max_chunks) = max_chunks_per_doc.filter(|&n| n > 0) else {
+		let pairs: Vec<(String, String)> = documents.into_iter().map(|d| (query.clone(), d)).collect();
+		return score_text_pairs(model, pairs, queue_wait).await;
+	};
+	let n_docs = documents.len();
+	let m = Arc::clone(model);
+	let (pairs, owners) = blocking(move || -> Result<ChunkPairs> {
+		let budget = m.encoder.doc_chunk_budget(&query)?;
+		let (mut pairs, mut owners) = (Vec::new(), Vec::new());
+		for (i, doc) in documents.into_iter().enumerate() {
+			let chunks = match budget {
+				Some(b) => m.encoder.split_text(&doc, b)?,
+				None => vec![doc],
+			};
+			for chunk in chunks.into_iter().take(max_chunks) {
+				pairs.push((query.clone(), chunk));
+				owners.push(i);
+			}
+		}
+		Ok((pairs, owners))
+	})
+	.await??;
+	let outcome = score_text_pairs(model, pairs, queue_wait).await?;
+	Ok(RerankOutcome { scores: best_per_doc(&outcome.scores, &owners, n_docs), prompt_tokens: outcome.prompt_tokens })
+}
+
+/// (query, chunk) pairs to score and, per pair, the index of its document.
+type ChunkPairs = (Vec<(String, String)>, Vec<usize>);
+
+/// Best chunk score per document, in document order.
+fn best_per_doc(chunks: &[Scored], owners: &[usize], n_docs: usize) -> Vec<Scored> {
+	let mut best: Vec<Scored> = (0..n_docs).map(|index| Scored { index, score: f64::NEG_INFINITY }).collect();
+	for chunk in chunks {
+		let doc = &mut best[owners[chunk.index]];
+		doc.score = doc.score.max(chunk.score);
+	}
+	best
 }
 
 pub async fn score_text_pairs(model: &Arc<LoadedModel>, pairs: Vec<(String, String)>, queue_wait: Duration) -> Result<RerankOutcome> {
-	let Meta::Rerank { scoring, yes_id, no_id, output } = &model.meta else {
+	if !matches!(model.meta, Meta::Rerank { .. }) {
 		return Err(Error::KindMismatch {
 			name: model.name().into(),
 			expected: "rerank",
 			actual: model.kind().as_str(),
 		});
-	};
-	let (scoring, yes_id, no_id, output) = (*scoring, *yes_id, *no_id, output.clone());
-
+	}
 	let m = Arc::clone(model);
 	let enc = blocking(move || m.encoder.encode_pairs(&pairs)).await??;
-	let token_count = enc.token_count();
-	let attn = enc.attention_mask.clone();
-
-	let pooled = model.pool.acquire(queue_wait).await?;
-	let scores = pooled
-		.run_blocking(move |session| -> Result<Vec<f64>> {
-			let inputs = make_inputs(session, &enc)?;
-			run_forward(session, inputs, &output, |fwd| apply_scoring(&fwd, scoring, yes_id, no_id, &attn))
-		})
-		.await?;
-
+	warn_truncated(model, enc.truncated);
+	let prompt_tokens = enc.token_count();
+	let scores = run_rows(model, enc, queue_wait).await?.into_iter().map(RowOut::into_score).collect::<Result<Vec<_>>>()?;
 	Ok(RerankOutcome {
-		scores: scores.iter().copied().enumerate().map(|(index, score)| Scored { index, score }).collect(),
-		prompt_tokens: token_count,
+		scores: scores.into_iter().enumerate().map(|(index, score)| Scored { index, score }).collect(),
+		prompt_tokens,
+	})
+}
+
+/// Batch extractor for rerank models: one relevance score per (query, document) row.
+pub(crate) fn extractor(scoring: Scoring, yes_id: Option<u32>, no_id: Option<u32>, output: OutSel) -> Arc<Extract> {
+	Arc::new(move |session: &mut Session, enc: &Encoded| -> Result<Vec<RowOut>> {
+		let scores = forward(session, enc, &output, |fwd| apply_scoring(&fwd, scoring, yes_id, no_id, &enc.attention_mask))?;
+		Ok(scores.into_iter().map(RowOut::Score).collect())
 	})
 }
 
@@ -77,7 +117,7 @@ fn apply_scoring(fwd: &Fwd<'_>, mut scoring: Scoring, yes_id: Option<u32>, no_id
 				.map(|i| {
 					let row = &fwd.data[i * 2..(i + 1) * 2];
 					match scoring {
-						Scoring::Sigmoid => 1.0 / (1.0 + -(row[1] as f64 - row[0] as f64)).exp(),
+						Scoring::Sigmoid => 1.0 / (1.0 + (-(row[1] as f64 - row[0] as f64)).exp()),
 						_ => softmax(row)[1],
 					}
 				})

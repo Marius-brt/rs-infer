@@ -35,7 +35,7 @@ models:
 	assert_eq!(cfg.models[0].coreml_compute_units, CoreMlComputeUnits::CpuAndGpu);
 	assert_eq!(cfg.models[1].kind, Kind::Rerank);
 	assert_eq!(cfg.models[2].threshold, 0.6);
-	assert_eq!(cfg.models[0].batching, None);
+	assert!(cfg.models[0].batching.enabled);
 	assert_eq!(cfg.models[0].hypothesis_template, "The text is about {label}.");
 	cfg.models.iter().for_each(|m| m.validate().unwrap());
 }
@@ -50,10 +50,13 @@ models:
     batching: { max_rows: 32 }
 "#;
 	let cfg: Config = serde_norway::from_str(yaml_src).unwrap();
-	let b = cfg.models[0].batching.unwrap();
+	let b = cfg.models[0].batching;
+	assert!(b.enabled);
 	assert_eq!(b.max_rows, 32);
-	assert_eq!(b.max_tokens, 4096);
+	assert_eq!(b.max_tokens, 8192);
 	assert_eq!(b.queue_rows, 1024);
+	let off: Config = serde_norway::from_str(&yaml_src.replace("{ max_rows: 32 }", "{ enabled: false }")).unwrap();
+	assert!(!off.models[0].batching.enabled);
 }
 
 #[test]
@@ -66,6 +69,23 @@ models:
     batching: { nonsense: 1 }
 "#;
 	assert!(serde_norway::from_str::<Config>(yaml_src).is_err());
+}
+
+#[test]
+fn max_batch_defaults_and_validates() {
+	let yaml_src = r#"
+models:
+  - name: x
+    kind: embedding
+    path: models/x
+  - name: y
+    kind: rerank
+    path: models/y
+    max_batch: 0
+"#;
+	let cfg: Config = serde_norway::from_str(yaml_src).unwrap();
+	assert_eq!(cfg.models[0].max_batch, 32);
+	assert!(cfg.models[1].validate().is_err());
 }
 
 #[test]

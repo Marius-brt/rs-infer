@@ -30,6 +30,7 @@ pub enum EpName {
 	Cuda,
 	Tensorrt,
 	Nvrtx,
+	Openvino,
 }
 
 impl EpName {
@@ -40,6 +41,7 @@ impl EpName {
 			EpName::Cuda => "cuda",
 			EpName::Tensorrt => "tensorrt",
 			EpName::Nvrtx => "nvrtx",
+			EpName::Openvino => "openvino",
 		}
 	}
 }
@@ -97,9 +99,14 @@ pub enum CoreMlComputeUnits {
 	CpuOnly,
 }
 
-/// Preferred weight format when several graph files exist in the model dir/repo.
-/// `auto` = fp32 first (fallback fp16 > quantized); explicit values reorder the
-/// candidate list so e.g. a quantized export wins over the fp32 default.
+/// Precision of the graph the model runs.
+/// - `auto`: on CPU-only execution, the server's own per-channel int8 rewrite of
+///   the fp32 graph (cached, kept only if it passes a quality check against
+///   fp32, see `quantize`); with GPU/CoreML execution providers, the published
+///   graph (fp32 first, else fp16 > quantized files).
+/// - `int8`: that int8 rewrite whatever the providers (the publisher's int8
+///   files if the repo has no fp32 graph).
+/// - `fp32` / `fp16`: the published graph of that format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dtype {
@@ -110,27 +117,28 @@ pub enum Dtype {
 	Int8,
 }
 
-/// Opt-in cross-request batching for embedding models: the server spreads the queue
-/// backlog over free session replicas, packing up to `max_rows` rows / `max_tokens`
-/// real tokens per forward. A row arriving to an empty queue is dispatched
-/// immediately, so batching adds no latency; it only amortizes per-forward cost
-/// when many requests overlap. On backends where forward time scales linearly with
-/// rows (CPU fp32) it mainly helps small-request traffic and is neutral for big
-/// single-request batches.
+/// Cross-request batching (on by default, every model kind): rows from concurrent
+/// requests are sorted by length and packed into forwards of up to `max_rows`
+/// rows and `max_tokens` padded tokens, spread over the free session replicas. A
+/// row arriving to an empty queue is dispatched immediately, so batching adds no
+/// latency; it amortizes per-forward cost when requests overlap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Batching {
-	/// Max token rows per assembled batch.
+	/// `false`: every request runs as its own forward(s) (`max_batch`-row slices).
+	pub enabled: bool,
+	/// Max rows per assembled batch.
 	pub max_rows: usize,
-	/// Soft cap on real (unpadded) tokens per batch.
+	/// Max padded tokens (rows x longest row) per batch; bounds activation memory.
 	pub max_tokens: usize,
-	/// Max rows queued (in + waiting) before shedding with 429.
+	/// Max rows queued (in + waiting) before shedding with 429; a request with
+	/// more rows than this bypasses the queue.
 	pub queue_rows: usize,
 }
 
 impl Default for Batching {
 	fn default() -> Self {
-		Self { max_rows: 64, max_tokens: 4096, queue_rows: 1024 }
+		Self { enabled: true, max_rows: 64, max_tokens: 8192, queue_rows: 1024 }
 	}
 }
 
@@ -155,6 +163,10 @@ pub struct ServerConfig {
 	pub queue_timeout_ms: u64,
 	/// Directory used by hf-hub for downloads (also honors HF_HOME).
 	pub hf_cache_dir: Option<PathBuf>,
+	/// Threads of the ONNX Runtime pool shared by every session of every model;
+	/// 0 = number of physical cores. A model with `intra_threads > 0` gets its
+	/// own pool instead.
+	pub threads: usize,
 }
 
 impl Default for ServerConfig {
@@ -166,6 +178,7 @@ impl Default for ServerConfig {
 			max_queue: 256,
 			queue_timeout_ms: 30_000,
 			hf_cache_dir: None,
+			threads: 0,
 		}
 	}
 }
@@ -202,8 +215,8 @@ pub struct ModelConfig {
 	/// Number of concurrent sessions (pool replicas) for this model.
 	#[serde(default = "default_replicas")]
 	pub replicas: usize,
-	/// intra-op threads per session; 0 = all logical cores per replica (measured
-	/// fastest on M5 Pro with multi-replica; set e.g. cores/replicas on NUMA hosts).
+	/// 0 = sessions run on the shared thread pool (`server.threads`); > 0 = each
+	/// session of this model gets its own pool of that many threads.
 	#[serde(default)]
 	pub intra_threads: usize,
 	/// Execution provider priority list; entries not compiled in are skipped with a warning.
@@ -212,9 +225,13 @@ pub struct ModelConfig {
 	/// Make this model the default for its kind even if loaded later.
 	#[serde(default)]
 	pub default: bool,
-	/// Cross-request dynamic batching for embedding models (opt-in). Absent = per-request forwards.
+	/// Cross-request dynamic batching (on by default; `batching: { enabled: false }` to opt out).
 	#[serde(default)]
-	pub batching: Option<Batching>,
+	pub batching: Batching,
+	/// Max rows per forward pass; a bigger request runs as successive slices, so
+	/// one request cannot blow up activation memory.
+	#[serde(default = "default_max_batch")]
+	pub max_batch: usize,
 
 	// --- embedding ---
 	#[serde(default)]
@@ -254,6 +271,9 @@ pub struct ModelConfig {
 	pub trt_engine_cache: Option<PathBuf>,
 	#[serde(default)]
 	pub device_id: i32,
+	/// OpenVINO device: CPU (default), GPU (Intel GPUs), NPU, or AUTO.
+	#[serde(default = "default_openvino_device")]
+	pub openvino_device: String,
 
 	/// ORT profiling file prefix, set programmatically by the `profile` command;
 	/// not configurable from YAML.
@@ -266,6 +286,12 @@ fn default_revision() -> String {
 }
 fn default_replicas() -> usize {
 	2
+}
+fn default_openvino_device() -> String {
+	"CPU".into()
+}
+fn default_max_batch() -> usize {
+	32
 }
 fn default_true() -> bool {
 	true
@@ -300,7 +326,8 @@ impl Default for ModelConfig {
 			intra_threads: 0,
 			eps: vec![],
 			default: false,
-			batching: None,
+			batching: Batching::default(),
+			max_batch: default_max_batch(),
 			pooling: Pooling::Auto,
 			normalize: true,
 			dimensions: None,
@@ -313,6 +340,7 @@ impl Default for ModelConfig {
 			coreml_compute_units: CoreMlComputeUnits::All,
 			trt_engine_cache: None,
 			device_id: 0,
+			openvino_device: default_openvino_device(),
 			profiling_prefix: None,
 		}
 	}
@@ -345,6 +373,9 @@ impl ModelConfig {
 		}
 		if self.replicas == 0 {
 			return Err(crate::Error::Config(format!("model '{}': replicas must be >= 1", self.name)));
+		}
+		if self.max_batch == 0 {
+			return Err(crate::Error::Config(format!("model '{}': max_batch must be >= 1", self.name)));
 		}
 		Ok(())
 	}

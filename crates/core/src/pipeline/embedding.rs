@@ -1,10 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
+use ort::session::Session;
+
 use crate::{
 	config::Pooling,
-	model::Meta,
-	pipeline::{blocking, run_forward, Fwd},
-	tokenize::make_inputs,
+	model::{Meta, OutSel},
+	pipeline::{blocking, forward, run_rows, warn_truncated, Extract, Fwd, RowOut},
+	tokenize::{Encoded, Row},
 	Error, LoadedModel, Result,
 };
 
@@ -16,96 +18,56 @@ pub struct EmbedOutput {
 
 /// Produces one embedding vector per input text, in request order.
 pub async fn embed(model: &Arc<LoadedModel>, texts: Vec<String>, queue_wait: Duration) -> Result<EmbedOutput> {
-	let Meta::Embedding { pooling, output, normalize, dimensions } = &model.meta else {
-		return Err(Error::KindMismatch {
-			name: model.name().into(),
-			expected: "embedding",
-			actual: model.kind().as_str(),
-		});
-	};
-	let (pooling, output, normalize, dimensions) = (*pooling, output.clone(), *normalize, *dimensions);
-
-	if let Some(batcher) = &model.batcher {
-		let m = Arc::clone(model);
-		let rows = blocking(move || m.encoder.encode_rows(&texts)).await??;
-		let token_count = rows.iter().map(|r| r.len()).sum();
-		let vectors = batcher.submit(rows, queue_wait).await?;
-		tracing::trace!(model = model.name(), rows = vectors.len(), tokens = token_count, "embedding done (batched)");
-		return Ok(EmbedOutput { vectors, tokens: token_count });
-	}
-
+	ensure_embedding(model)?;
 	let m = Arc::clone(model);
 	let enc = blocking(move || m.encoder.encode_texts(&texts)).await??;
-	let token_count = enc.token_count();
-	let attn = enc.attention_mask.clone();
-
-	let pooled = model.pool.acquire(queue_wait).await?;
-	let vectors = pooled
-		.run_blocking(move |session| -> Result<Vec<Vec<f32>>> {
-			let inputs = make_inputs(session, &enc)?;
-			run_forward(session, inputs, &output, |fwd| pool_rows(&fwd, pooling, &attn))
-		})
-		.await?;
-
-	let n = vectors.len();
-	let mut out = Vec::with_capacity(n);
-	for mut vec in vectors {
-		if let Some(d) = dimensions {
-			if d < vec.len() {
-				vec.truncate(d);
-			}
-		}
-		if normalize {
-			l2_normalize(&mut vec);
-		}
-		out.push(vec);
-	}
-	tracing::trace!(model = model.name(), rows = n, tokens = token_count, "embedding done");
-	Ok(EmbedOutput { vectors: out, tokens: token_count })
+	warn_truncated(model, enc.truncated);
+	let tokens = enc.token_count();
+	let vectors = run_rows(model, enc, queue_wait).await?.into_iter().map(RowOut::into_vector).collect::<Result<_>>()?;
+	Ok(EmbedOutput { vectors, tokens })
 }
 
 /// Embeddings from raw token id rows (OpenAI `input` as token arrays).
 pub async fn embed_tokens(model: &Arc<LoadedModel>, rows: Vec<Vec<u32>>, queue_wait: Duration) -> Result<EmbedOutput> {
-	let Meta::Embedding { pooling, output, normalize, dimensions } = &model.meta else {
-		return Err(Error::KindMismatch {
-			name: model.name().into(),
-			expected: "embedding",
-			actual: model.kind().as_str(),
-		});
-	};
-	let (pooling, output, normalize, dimensions) = (*pooling, output.clone(), *normalize, *dimensions);
+	ensure_embedding(model)?;
 	if rows.is_empty() {
 		return Ok(EmbedOutput { vectors: Vec::new(), tokens: 0 });
 	}
-	let tokens: usize = rows.iter().map(|r| r.len()).sum();
+	let rows: Vec<Row> = rows
+		.into_iter()
+		.map(|r| Row { type_ids: vec![0; r.len()], ids: r.into_iter().map(i64::from).collect() })
+		.collect();
+	let enc = Encoded::from_rows(&rows);
+	let tokens = enc.token_count();
+	let vectors = run_rows(model, enc, queue_wait).await?.into_iter().map(RowOut::into_vector).collect::<Result<_>>()?;
+	Ok(EmbedOutput { vectors, tokens })
+}
 
-	if let Some(batcher) = &model.batcher {
-		let vectors = batcher.submit(rows, queue_wait).await?;
-		return Ok(EmbedOutput { vectors, tokens });
+fn ensure_embedding(model: &LoadedModel) -> Result<()> {
+	match model.meta {
+		Meta::Embedding { .. } => Ok(()),
+		_ => Err(Error::KindMismatch { name: model.name().into(), expected: "embedding", actual: model.kind().as_str() }),
 	}
+}
 
-	let pooled = model.pool.acquire(queue_wait).await?;
-	let vectors = pooled
-		.run_blocking(move |session| -> Result<Vec<Vec<f32>>> {
-			let inputs = crate::tokenize::make_token_inputs(session, &rows)?;
-			let attn: Vec<Vec<i64>> = rows.iter().map(|r| r.iter().map(|_| 1i64).collect()).collect();
-			run_forward(session, inputs, &output, |fwd| pool_rows(&fwd, pooling, &attn))
-		})
-		.await?;
-
-	let mut out = Vec::with_capacity(vectors.len());
-	for mut vec in vectors {
-		if let Some(d) = dimensions {
-			if d < vec.len() {
-				vec.truncate(d);
-			}
-		}
-		if normalize {
-			l2_normalize(&mut vec);
-		}
-		out.push(vec);
-	}
-	Ok(EmbedOutput { vectors: out, tokens })
+/// Batch extractor for embedding models: pooling, then Matryoshka truncation and
+/// L2 normalization as configured.
+pub(crate) fn extractor(pooling: Pooling, output: OutSel, normalize: bool, dimensions: Option<usize>) -> Arc<Extract> {
+	Arc::new(move |session: &mut Session, enc: &Encoded| -> Result<Vec<RowOut>> {
+		let rows = forward(session, enc, &output, |fwd| pool_rows(&fwd, pooling, &enc.attention_mask))?;
+		Ok(rows
+			.into_iter()
+			.map(|mut v| {
+				if let Some(d) = dimensions {
+					v.truncate(d);
+				}
+				if normalize {
+					l2_normalize(&mut v);
+				}
+				RowOut::Vector(v)
+			})
+			.collect())
+	})
 }
 
 /// Convert a rank-3 tensor [B,T,D] (or rank-2 [B,D]) into [B,D] rows.

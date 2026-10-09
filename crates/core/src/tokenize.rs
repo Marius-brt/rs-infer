@@ -4,7 +4,7 @@ use ort::{
 	session::{Session, SessionInputs, SessionInputValue},
 	value::{Outlet, Tensor, TensorElementType},
 };
-use tokenizers::{EncodeInput, Encoding, PaddingParams, Tokenizer, TruncationParams, TruncationDirection};
+use tokenizers::{EncodeInput, Encoding, PaddingParams, PostProcessor, Tokenizer, TruncationParams, TruncationDirection};
 
 use crate::{Error, Result};
 
@@ -18,21 +18,94 @@ pub struct Encoded {
 	pub offsets: Vec<Vec<(usize, usize)>>,
 	pub batch: usize,
 	pub seq: usize,
+	/// Inputs longer than `max_len` that the tokenizer cut (it kept the overflow aside).
+	pub truncated: usize,
 }
 
 impl Encoded {
 	pub fn token_count(&self) -> usize {
 		self.attention_mask.iter().map(|r| r.iter().map(|&m| m as usize).sum::<usize>()).sum()
 	}
+
+	/// Splits into batches of at most `max_rows` rows, each trimmed to its own
+	/// longest row (padding is on the right).
+	pub fn split(&self, max_rows: usize) -> Vec<Encoded> {
+		let max_rows = max_rows.max(1);
+		(0..self.batch)
+			.step_by(max_rows)
+			.map(|start| {
+				let end = (start + max_rows).min(self.batch);
+				let seq = self.attention_mask[start..end].iter().map(|m| m.iter().filter(|&&v| v != 0).count()).max().unwrap_or(0);
+				fn cut<T: Clone>(rows: &[Vec<T>], seq: usize) -> Vec<Vec<T>> {
+					rows.iter().map(|r| r[..seq.min(r.len())].to_vec()).collect()
+				}
+				Encoded {
+					input_ids: cut(&self.input_ids[start..end], seq),
+					attention_mask: cut(&self.attention_mask[start..end], seq),
+					token_type_ids: cut(&self.token_type_ids[start..end], seq),
+					offsets: self.offsets.get(start..end).map(|o| cut(o, seq)).unwrap_or_default(),
+					batch: end - start,
+					seq,
+					truncated: 0,
+				}
+			})
+			.collect()
+	}
+
+	/// Unpadded rows (right padding stripped via the attention mask), e.g. for
+	/// the cross-request batcher.
+	pub fn into_rows(self) -> Vec<Row> {
+		self.input_ids
+			.into_iter()
+			.zip(self.token_type_ids)
+			.zip(&self.attention_mask)
+			.map(|((mut ids, mut type_ids), mask)| {
+				let len = mask.iter().filter(|&&m| m != 0).count();
+				ids.truncate(len);
+				type_ids.truncate(len);
+				Row { ids, type_ids }
+			})
+			.collect()
+	}
+
+	/// Right-padded batch of `rows`.
+	pub fn from_rows(rows: &[Row]) -> Encoded {
+		let seq = rows.iter().map(|r| r.ids.len()).max().unwrap_or(0);
+		let pad = |v: &[i64]| {
+			let mut v = v.to_vec();
+			v.resize(seq, 0);
+			v
+		};
+		Encoded {
+			input_ids: rows.iter().map(|r| pad(&r.ids)).collect(),
+			attention_mask: rows.iter().map(|r| pad(&vec![1; r.ids.len()])).collect(),
+			token_type_ids: rows.iter().map(|r| pad(&r.type_ids)).collect(),
+			offsets: Vec::new(),
+			batch: rows.len(),
+			seq,
+			truncated: 0,
+		}
+	}
+}
+
+/// One unpadded model input row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+	pub ids: Vec<i64>,
+	/// Segment ids (0 for the first text of a pair, 1 for the second).
+	pub type_ids: Vec<i64>,
 }
 
 pub struct Encoder {
 	tokenizer: Tokenizer,
+	max_len: Option<usize>,
 	pub vocab_size: usize,
 }
 
 impl Encoder {
-	pub fn new(path: &std::path::Path, max_len: Option<usize>) -> Result<Self> {
+	/// `stride`: tokens shared by consecutive windows when a text overflows
+	/// `max_len` (used by [`Encoder::encode_texts_windows`]; 0 elsewhere).
+	pub fn new(path: &std::path::Path, max_len: Option<usize>, stride: usize) -> Result<Self> {
 		// tokenizers' encode_batch fans out on rayon by default; that pool then
 		// oversubscribes against ORT's intra-op threads. Serialize it unless the
 		// operator explicitly configured TOKENIZERS_PARALLELISM.
@@ -48,14 +121,48 @@ impl Encoder {
 			tokenizer
 				.with_truncation(Some(TruncationParams {
 					max_length: max,
-					stride: 0,
+					stride,
 					direction: TruncationDirection::Right,
 					..Default::default()
 				}))
 				.map_err(|e| Error::Tokenize(e.to_string()))?;
 		}
 		let vocab = tokenizer.get_vocab(true).len();
-		Ok(Self { tokenizer, vocab_size: vocab })
+		Ok(Self { tokenizer, max_len, vocab_size: vocab })
+	}
+
+	/// Tokens left for a document next to `query` in one pair input (`max_len`
+	/// minus the query and the pair's special tokens), at least a quarter of
+	/// `max_len`. `None` when no `max_len` is configured.
+	pub fn doc_chunk_budget(&self, query: &str) -> Result<Option<usize>> {
+		let Some(max) = self.max_len else { return Ok(None) };
+		let query_tokens = self.tokenizer.encode(query, false).map_err(|e| Error::Tokenize(e.to_string()))?.len();
+		let specials = self.tokenizer.get_post_processor().map_or(0, |p| p.added_tokens(true));
+		Ok(Some(max.saturating_sub(query_tokens + specials).max(max / 4).max(1)))
+	}
+
+	/// Splits `text` into consecutive chunks of at most `max_tokens` tokens, cut at
+	/// token boundaries. Always returns at least one chunk.
+	pub fn split_text(&self, text: &str, max_tokens: usize) -> Result<Vec<String>> {
+		let mut enc = self.tokenizer.encode(text, false).map_err(|e| Error::Tokenize(e.to_string()))?;
+		// Byte offsets of every content token; inputs over max_len come back as
+		// overflow windows, possibly overlapping (stride), so skip repeats.
+		let mut offsets: Vec<(usize, usize)> = Vec::new();
+		let overflow = enc.take_overflowing();
+		for part in std::iter::once(&enc).chain(&overflow) {
+			for &(s, e) in part.get_offsets() {
+				if e > s && s >= offsets.last().map_or(0, |o| o.1) {
+					offsets.push((s, e));
+				}
+			}
+		}
+		if offsets.is_empty() {
+			return Ok(vec![text.to_string()]);
+		}
+		Ok(offsets
+			.chunks(max_tokens.max(1))
+			.map(|c| text.get(c[0].0..c[c.len() - 1].1).unwrap_or(text).to_string())
+			.collect())
 	}
 
 	pub fn single_token_id(&self, word: &str) -> Option<u32> {
@@ -64,20 +171,30 @@ impl Encoder {
 	}
 
 	fn from_encodings(encodings: Vec<Encoding>, with_offsets: bool) -> Encoded {
+		// Rows are normally batch-padded already; overflow windows may not be, so
+		// right-pad everything to the longest row.
+		let seq = encodings.iter().map(|x| x.len()).max().unwrap_or(0);
+		let pad = |mut v: Vec<i64>| {
+			v.resize(seq, 0);
+			v
+		};
 		let mut e = Encoded {
 			input_ids: Vec::with_capacity(encodings.len()),
 			attention_mask: Vec::with_capacity(encodings.len()),
 			token_type_ids: Vec::with_capacity(encodings.len()),
 			offsets: Vec::new(),
 			batch: encodings.len(),
-			seq: encodings.first().map(|x| x.len()).unwrap_or(0),
+			seq,
+			truncated: encodings.iter().filter(|x| !x.get_overflowing().is_empty()).count(),
 		};
 		for enc in &encodings {
-			e.input_ids.push(enc.get_ids().iter().map(|&i| i as i64).collect());
-			e.attention_mask.push(enc.get_attention_mask().iter().map(|&m| m as i64).collect());
-			e.token_type_ids.push(enc.get_type_ids().iter().map(|&t| t as i64).collect());
+			e.input_ids.push(pad(enc.get_ids().iter().map(|&i| i as i64).collect()));
+			e.attention_mask.push(pad(enc.get_attention_mask().iter().map(|&m| m as i64).collect()));
+			e.token_type_ids.push(pad(enc.get_type_ids().iter().map(|&t| t as i64).collect()));
 			if with_offsets {
-				e.offsets.push(enc.get_offsets().to_vec());
+				let mut offsets = enc.get_offsets().to_vec();
+				offsets.resize(seq, (0, 0));
+				e.offsets.push(offsets);
 			}
 		}
 		e
@@ -92,24 +209,6 @@ impl Encoder {
 		Ok(Self::from_encodings(encodings, false))
 	}
 
-	/// Token ids per text, without batch padding (right-pad stripped via the
-	/// attention mask). For feeding into the cross-request batcher.
-	pub fn encode_rows(&self, texts: &[String]) -> Result<Vec<Vec<u32>>> {
-		let inputs: Vec<EncodeInput<'_>> = texts.iter().map(|t| EncodeInput::from(Cow::Borrowed(t.as_str()))).collect();
-		let encodings = self
-			.tokenizer
-			.encode_batch(inputs, true)
-			.map_err(|e| Error::Tokenize(e.to_string()))?;
-		Ok(encodings
-			.iter()
-			.map(|enc| {
-				let mask = enc.get_attention_mask();
-				let real = mask.iter().position(|&m| m == 0).unwrap_or(mask.len());
-				enc.get_ids()[..real].to_vec()
-			})
-			.collect())
-	}
-
 	pub fn encode_texts_offsets(&self, texts: &[String]) -> Result<Encoded> {
 		let inputs: Vec<EncodeInput<'_>> = texts.iter().map(|t| EncodeInput::from(Cow::Borrowed(t.as_str()))).collect();
 		let encodings = self
@@ -117,6 +216,29 @@ impl Encoder {
 			.encode_batch_char_offsets(inputs, true)
 			.map_err(|e| Error::Tokenize(e.to_string()))?;
 		Ok(Self::from_encodings(encodings, true))
+	}
+
+	/// Like [`Encoder::encode_texts_offsets`], but a text longer than `max_len`
+	/// yields one row per overlapping window (the tokenizer's overflow, `stride`
+	/// tokens shared) instead of being cut. Also returns each row's text index.
+	pub fn encode_texts_windows(&self, texts: &[String]) -> Result<(Encoded, Vec<usize>)> {
+		let inputs: Vec<EncodeInput<'_>> = texts.iter().map(|t| EncodeInput::from(Cow::Borrowed(t.as_str()))).collect();
+		let encodings = self
+			.tokenizer
+			.encode_batch_char_offsets(inputs, true)
+			.map_err(|e| Error::Tokenize(e.to_string()))?;
+		let mut rows = Vec::with_capacity(encodings.len());
+		let mut owners = Vec::with_capacity(encodings.len());
+		for (i, mut enc) in encodings.into_iter().enumerate() {
+			let overflow = enc.take_overflowing();
+			rows.push(enc);
+			owners.push(i);
+			for window in overflow {
+				rows.push(window);
+				owners.push(i);
+			}
+		}
+		Ok((Self::from_encodings(rows, true), owners))
 	}
 
 	pub fn encode_pairs(&self, pairs: &[(String, String)]) -> Result<Encoded> {
@@ -181,53 +303,6 @@ pub fn make_inputs(session: &Session, enc: &Encoded) -> Result<SessionInputs<'st
 	Ok(SessionInputs::ValueMap(map))
 }
 
-/// Builds raw token-id inputs for pre-tokenized inputs (OpenAI numeric token arrays).
-pub fn make_token_inputs(session: &Session, token_rows: &[Vec<u32>]) -> Result<SessionInputs<'static, 'static>> {
-	let seq = token_rows.iter().map(|r| r.len()).max().unwrap_or(0);
-	let mask = token_rows.iter().map(|r| {
-		let mut v = vec![1i64; r.len()];
-		v.resize(seq, 0);
-		v
-	});
-	let mut ids = Vec::new();
-	for r in token_rows {
-		let mut v: Vec<i64> = r.iter().map(|&i| i as i64).collect();
-		v.resize(seq, 0);
-		ids.extend_from_slice(&v);
-	}
-	let types = vec![0i64; ids.len()];
-	let shape = vec![token_rows.len() as i64, seq as i64];
-
-	let mut map: Vec<(Cow<'static, str>, ort::session::SessionInputValue<'static>)> = Vec::new();
-	let mut pushed = Vec::new();
-	let masks: Vec<Vec<i64>> = mask.collect();
-	let flat_masks: Vec<i64> = masks.iter().flatten().copied().collect();
-	for input in session.inputs() {
-		let name = input.name();
-		pushed.push(name.to_string());
-		// Decoder-only exports (e.g. Qwen3-Embedding): a single-pass embedding
-		// forward runs with an empty KV cache.
-		if name.starts_with("past_key_values.") {
-			map.push((Cow::Owned(name.to_string()), empty_kv_cache(input, token_rows.len())?));
-			continue;
-		}
-		let data: Vec<i64> = match name {
-			"input_ids" => ids.clone(),
-			"attention_mask" => flat_masks.clone(),
-			"token_type_ids" => types.clone(),
-			// HF convention: position_ids = cumsum(attention_mask) - 1.
-			"position_ids" => position_ids(&masks),
-			other => {
-				return Err(Error::Ort(ort::Error::new(format!(
-					"model requires unsupported input '{other}'; required inputs: {pushed:?}"
-				))));
-			}
-		};
-		map.push((Cow::Owned(name.to_string()), Tensor::from_array((shape.clone(), data))?.into()));
-	}
-	Ok(SessionInputs::ValueMap(map))
-}
-
 /// HF convention: position_ids = cumsum(attention_mask) - 1 along the sequence dim.
 fn position_ids(mask: &[Vec<i64>]) -> Vec<i64> {
 	let mut out = Vec::new();
@@ -271,3 +346,7 @@ fn empty_kv_cache(input: &Outlet, batch: usize) -> Result<SessionInputValue<'sta
 		None => Err(Error::Ort(ort::Error::new(format!("input '{}' has no element type", input.name())))),
 	}
 }
+
+#[cfg(test)]
+#[path = "tests/tokenize_tests.rs"]
+mod tests;

@@ -11,7 +11,6 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use rsinfer_core::Registry;
 use tokio::net::TcpListener;
-use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer};
 
 use crate::state::AppState;
 
@@ -149,7 +148,7 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
 	let config = Arc::new(config);
 
 	tracing::info!(
-		"rsinfer v{} starting with {} model(s) on {} ({}); EP features: coreml={} cuda={} tensorrt={} nvrtx={}",
+		"rsinfer v{} starting with {} model(s) on {} ({}); EP features: coreml={} cuda={} tensorrt={} nvrtx={} openvino={}",
 		env!("CARGO_PKG_VERSION"),
 		config.models.len(),
 		std::env::consts::OS,
@@ -158,14 +157,16 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
 		cfg!(feature = "ep-cuda"),
 		cfg!(feature = "ep-tensorrt"),
 		cfg!(feature = "ep-nvrtx"),
+		cfg!(feature = "ep-openvino"),
 	);
 	if let Some(rss) = rsinfer_core::memory::rss_mb() {
 		tracing::info!(ram_mb = rss, "process memory at startup");
 	}
+	let threads = rsinfer_core::ep::init_shared_thread_pool(config.server.threads)?;
+	tracing::info!(threads, "ONNX Runtime thread pool shared by all models");
 	tracing::info!(bind = %config.server.bind, "resolving and loading configured models (first run downloads from the HF Hub)");
 	let started = std::time::Instant::now();
 	let registry = Arc::new(Registry::load(config.clone()).await?);
-	registry.start_batchers();
 	tracing::info!(
 		elapsed_ms = started.elapsed().as_millis(),
 		models = registry.infos().len(),
@@ -174,12 +175,11 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
 	);
 
 	let state = AppState::new(registry, config.clone());
-	let app = api::router(state)
-		.layer(TimeoutLayer::with_status_code(
-			axum::http::StatusCode::REQUEST_TIMEOUT,
-			std::time::Duration::from_millis(config.server.request_timeout_ms),
-		))
-		.layer(RequestBodyLimitLayer::new(config.server.max_body_mb * 1024 * 1024));
+	let app = api::router(
+		state,
+		std::time::Duration::from_millis(config.server.request_timeout_ms),
+		config.server.max_body_mb * 1024 * 1024,
+	);
 
 	let listener = TcpListener::bind(&config.server.bind).await.with_context(|| format!("cannot bind {}", config.server.bind))?;
 	let addr = listener.local_addr()?;
